@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { composeError, Context } from '@deepseek-ai/cordis'
 import { isNonNullable, type Dict } from '@deepseek-ai/cosmokit'
 import { Entry, type EntryOptions } from './entry.ts'
@@ -156,7 +158,12 @@ export abstract class EntryTree {
       } else if (name.startsWith('.')) {
         return await import(/* @vite-ignore */new URL(name, this.ctx.baseUrl).href)
       } else {
-        return await import(/* @vite-ignore */name)
+        // Node's internal ESM loader is unavailable in hosts such as the
+        // Electron main process (even under ELECTRON_RUN_AS_NODE): fall back
+        // to resolving the specifier against the config tree, keeping
+        // nearest-wins from the profile root instead of this module's own
+        // location.
+        return await import(/* @vite-ignore */pathToFileURL(createRequire(this.ctx.baseUrl!).resolve(name)).href)
       }
     }, getOuterStack)
   }

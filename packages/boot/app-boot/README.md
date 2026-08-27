@@ -96,6 +96,7 @@ The exports each own one stage of the boot: config resolution and snapshot repla
 |---|---|
 | [`src/index.ts`](src/index.ts) | Boot helpers: config resolution, environment loading, fail-loud guard, activation audit, patch parsing, config dump, harness-source section |
 | [`src/profile.ts`](src/profile.ts) | Profile discovery, initialization, bundle resolution, module fallback |
+| [`src/run-profile.ts`](src/run-profile.ts) | One profile invocation end to end: patch stacking over the empty profile root, boot, live user-patch reload, and bounded process shutdown (shared by the CLI and desktop shells) |
 | [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; boundary and replay tests cover the protocol mapping) |
 
 </details>

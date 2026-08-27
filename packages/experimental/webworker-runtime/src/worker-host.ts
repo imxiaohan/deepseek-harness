@@ -351,7 +351,7 @@ function requireLoweredImage(vfs: MemoryVfs, path: string): void {
  * supplies it.
  *
  * A launcher appends this root itself rather than writing it into the roster —
- * `apps/cli` does it in `composeProfile` (`profile-boot.ts:159-166`) because only
+ * `apps/cli` does it in `composeProfile` (`@deepseek-ai/dsh-app-boot` run-profile.ts) because only
  * the application knows where its own presets sit. The worker's presets travel
  * in the image, so the same overlay names their virtual path. Patching replaces
  * a row's whole `config`, so the current one is read and spread, and a roster

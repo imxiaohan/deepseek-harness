@@ -23,7 +23,7 @@ import {
   writeProfileManifest,
   type ProfileManifest,
 } from '@deepseek-ai/dsh-app-boot'
-import { INSTALL_ANCHOR } from './profile-boot.ts'
+import { INSTALL_ANCHOR } from './install-anchor.ts'
 
 const NAME = 'dsh'
 

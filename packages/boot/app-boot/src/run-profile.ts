@@ -8,12 +8,15 @@
  * App flags are not the launcher's business: the invocation's inner arguments
  * are provided to the tree through `ctx.cmdlineArgs`, where any injected app
  * plugin may read the same immutable snapshot.
- * @module @deepseek-ai/dsh/profile-boot
+ *
+ * The installation anchor (this dsh installation's package.json) belongs to
+ * the caller: the CLI app anchors at `apps/cli`, the desktop shell at its own
+ * manifest, and profile resolution stays installation-relative.
+ * @module @deepseek-ai/dsh-app-boot/run-profile
  */
 
 import { writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -70,9 +73,6 @@ export function homePatchPath(): string {
   return join(resolveDshHome(), PROFILE_PATCH_FILENAME)
 }
 
-/** Absolute path of this dsh installation's package.json (both anchors: src/ and lib/ sit one level under apps/cli). */
-export const INSTALL_ANCHOR = fileURLToPath(new URL('../package.json', import.meta.url))
-
 /** The session-telemetry row id the DSH_TELEMETRY_DISABLED switch targets. */
 const TELEMETRY_ROW_ID = 'session-telemetry-otel'
 
@@ -112,11 +112,12 @@ export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: b
  * directory (the config dump anchors on the same file, so both compose over
  * the identical base).
  * @param name - the profile name.
+ * @param installAnchor - absolute path of this dsh installation's package.json.
  * @param userLayer - `false` skips parsing `cordis.patch.yml` (the default dump).
  * @returns the loaded profile.
  */
-export function prepareProfile(name: string, userLayer = true): Profile {
-  const profile = loadProfile(NAME, name, INSTALL_ANCHOR, undefined, { userLayer })
+export function prepareProfile(name: string, installAnchor: string, userLayer = true): Profile {
+  const profile = loadProfile(NAME, name, installAnchor, undefined, { userLayer })
   writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
   return profile
 }
@@ -150,15 +151,17 @@ function allPatches(composed: ComposedProfile): PatchOptions[] {
  * to every profile, so it outranks the per-profile layer), `--patch` overlays,
  * then the telemetry switch.
  * @param name - the profile name.
+ * @param installAnchor - absolute path of this dsh installation's package.json.
  * @param patchFiles - `--patch` overlay paths, in argv order.
  * @returns the profile and its patch layers.
  */
 async function composeProfile(
   name: string,
+  installAnchor: string,
   patchFiles: readonly string[],
 ): Promise<ComposedProfile> {
-  const profile = prepareProfile(name)
-  await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR, profile })
+  const profile = prepareProfile(name, installAnchor)
+  await healProfilesModuleFallback({ installAnchor, profile })
   const homePatches = loadOptionalPatches(NAME, homePatchPath()) ?? []
   const overlays = patchFiles.flatMap(file => loadOverlayPatches(NAME, resolve(file)))
   const bundlePatches = profile.layers.flatMap(layer => layer.patches)
@@ -178,6 +181,14 @@ export interface RunProfileOptions {
   environment: LaunchEnvironmentSnapshot
   /** The profile name to boot. */
   profile: string
+  /** Absolute path of this dsh installation's package.json. */
+  installAnchor: string
+  /**
+   * Overrides the profile manifest's user-patch reload mode. `'frozen'` skips
+   * the config-HMR fallback and watchers; the desktop shell freezes its boots
+   * because Electron's Node cannot mount the vendored HMR service.
+   */
+  patchReload?: 'live' | 'frozen'
   /** `--patch` overlay paths, in argv order. */
   patchFiles: readonly string[]
   /** The invocation's inner arguments, handed to the tree through `ctx.cmdlineArgs`. */
@@ -207,7 +218,7 @@ function suppressShutdownError(ctx: Context, signal: AbortSignal, error: unknown
  * @returns the settled root context and the shutdown controller.
  */
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
-  const composed = await composeProfile(options.profile, options.patchFiles)
+  const composed = await composeProfile(options.profile, options.installAnchor, options.patchFiles)
   const app: { current?: Context } = {}
   const appReady = createAppReady()
   const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
@@ -267,7 +278,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   // own liveness; the initial check skips a tree that already exited, and the
   // catch below re-checks for an exit that landed mid-setup. Startup-frozen
   // profiles apply every user layer above but install no HMR fallback or watcher.
-  if (composed.profile.patchReload === 'live'
+  if ((options.patchReload ?? composed.profile.patchReload) === 'live'
     && !signalShutdown.signal.aborted
     && ctx.fiber.state === FiberState.ACTIVE
     && ctx.get('loader') !== undefined) {

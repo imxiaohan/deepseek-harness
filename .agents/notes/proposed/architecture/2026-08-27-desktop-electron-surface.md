@@ -47,7 +47,7 @@ On the Web carrier, every `/api` request passes the Host/Origin browser-trust fe
 
 ### Milestones
 
-- M1, thin shell: the Electron main process boots the Web profile and the window loads the authenticated loopback URL (`BrowserAuth.authenticatedUrl`). This validates packaging, signing, auto-update, and emitting system notifications (the answer path is M3) with zero carrier work and must not become the end state.
+- M1, thin shell: the Electron main process boots the Web profile and the window loads the authenticated loopback URL (`BrowserAuth.authenticatedUrl`). This validates packaging, signing, auto-update, and emitting system notifications (the answer path is M3) with zero carrier work and must not become the end state. Shipped finding: the profile tree runs in a host child process — the same binary under `ELECTRON_RUN_AS_NODE=1` — because the vendored Loader's plugin imports fast-path through Node's internal ESM loader, which the Electron main process does not expose; the Loader's fallback now resolves against the config tree (vendor modification log), and the shell freezes user-patch reload because the vendored config-HMR service requires `--expose-internals`.
 - M2, the desktop bundle and IPC carrier: the custom scheme, the preload transport, and the dropped webserver rows; the surface stops listening on any port.
 - M3, native capability providers: the Electron directory picker, keychain credentials, deep links, and notification answers.
 - M4, distribution hardening: crash isolation by forking the host tree into a child process if evidence demands it — the carrier interface survives that fork unchanged — plus the update channel.

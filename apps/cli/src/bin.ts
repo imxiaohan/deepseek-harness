@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { parseDshArgs } from './args.ts'
+import { INSTALL_ANCHOR } from './install-anchor.ts'
 
 // Both the source tree (apps/cli/src) and the bundled bin (apps/cli/lib) sit
 // one directory under apps/cli, so the checked-in manifest resolves with the
@@ -25,10 +26,11 @@ const invocation = parseDshArgs(process.argv.slice(2), readVersion())
 
 switch (invocation.mode) {
   case 'profile': {
-    const { runProfile } = await import('./profile-boot.ts')
+    const { runProfile } = await import('@deepseek-ai/dsh-app-boot')
     await runProfile({
       environment: loadLayeredEnv('dsh'),
       profile: invocation.profile,
+      installAnchor: INSTALL_ANCHOR,
       patchFiles: invocation.patches,
       args: invocation.args,
     })

@@ -14,7 +14,8 @@ import {
   renderConfigDump,
   type ConfigDumpLayer,
 } from '@deepseek-ai/dsh-app-boot'
-import { homePatchPath, prepareProfile, PROFILE_ROOT_FILENAME } from './profile-boot.ts'
+import { homePatchPath, prepareProfile, PROFILE_ROOT_FILENAME } from '@deepseek-ai/dsh-app-boot'
+import { INSTALL_ANCHOR } from './install-anchor.ts'
 
 const NAME = 'dsh'
 
@@ -28,7 +29,7 @@ const NAME = 'dsh'
  * @param patches - `--patch` overlay paths, in argv order.
  */
 export function runDumpConfig(profile: string, defaultOnly: boolean, patches: readonly string[]): void {
-  const loaded = prepareProfile(profile, !defaultOnly)
+  const loaded = prepareProfile(profile, INSTALL_ANCHOR, !defaultOnly)
   const layers: ConfigDumpLayer[] = loaded.layers.map(layer => ({
     label: layer.packageName,
     patches: layer.patches,

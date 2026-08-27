@@ -32,6 +32,13 @@ peerDependencyRules:
 allowBuilds:
   esbuild: true
   lefthook: true
+  # Electron's postinstall downloads the platform runtime; electron-builder's
+  # downloads its packaging toolchain. The desktop shell (apps/desktop) needs both.
+  electron: true
+  electron-builder: true
+  # electron-builder's Windows-target transitive; its postinstall fetches the
+  # wrapper toolchain the desktop packaging config can reach.
+  electron-winstaller: true
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists

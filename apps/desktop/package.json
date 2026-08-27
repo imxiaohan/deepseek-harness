@@ -1,0 +1,37 @@
+{
+  "name": "@deepseek-ai/dsh-desktop",
+  "private": true,
+  "description": "dsh desktop: the Electron thin shell over the Web profile (milestone 1)",
+  "version": "0.1.2-alpha.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "apps/desktop"
+  },
+  "type": "module",
+  "main": "lib/main.js",
+  "files": [
+    "lib/*.js"
+  ],
+  "scripts": {
+    "build": "tsc -p . && tsdown",
+    "dev": "pnpm run build && electron .",
+    "dist": "pnpm run build && electron-builder"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-app-boot": "workspace:^",
+    "@deepseek-ai/dsh-base": "workspace:^",
+    "@deepseek-ai/dsh-web-app": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-client-connection": "workspace:^",
+    "@deepseek-ai/dsh-host-webserver": "workspace:^",
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12"
+  }
+}

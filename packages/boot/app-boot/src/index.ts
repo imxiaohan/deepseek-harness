@@ -52,6 +52,21 @@ export {
   type ProfileTemplate,
 } from './profile.ts'
 
+export {
+  homePatchPath,
+  prepareProfile,
+  PROFILE_ROOT_FILENAME,
+  resolveTelemetryPatch,
+  runProfile,
+  type RunProfileOptions,
+} from './run-profile.ts'
+
+export {
+  createProcessShutdown,
+  PROCESS_SHUTDOWN_TIMEOUT_MS,
+  type ProcessShutdown,
+} from './process-shutdown.ts'
+
 /**
  * Resolve the config to boot. Replay swaps a `cordis.yml` basename for
  * `cordis.snapshot.yml` in the same directory; every other mode keeps the path.

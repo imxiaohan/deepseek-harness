@@ -36,7 +36,7 @@ function disabledOn(row: { disabled?: unknown }, platform: 'win32' | 'linux'): b
 describe('the shipped shell composition (real bundle layers)', () => {
   let home: string
   afterEach(() => { if (home !== undefined) rmSync(home, { recursive: true, force: true }) })
-  // The app installation anchor, mirroring profile-boot.ts: the bundle layers
+  // The app installation anchor, mirroring runProfile in dsh-app-boot: the bundle layers
   // resolve from the REAL dsh-base/dsh-web-app packages through it, so this
   // suite composes the shipped patch files, not test fixtures.
   const anchor = fileURLToPath(new URL('../package.json', import.meta.url))
