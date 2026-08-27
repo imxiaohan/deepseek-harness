@@ -1,5 +1,3 @@
-import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
 import { composeError, Context } from '@deepseek-ai/cordis'
 import { isNonNullable, type Dict } from '@deepseek-ai/cosmokit'
 import { Entry, type EntryOptions } from './entry.ts'
@@ -162,7 +160,12 @@ export abstract class EntryTree {
         // Electron main process (even under ELECTRON_RUN_AS_NODE): fall back
         // to resolving the specifier against the config tree, keeping
         // nearest-wins from the profile root instead of this module's own
-        // location.
+        // location. The Node imports stay inside this branch — the browser
+        // bundle ships this file without statically linking them.
+        const [{ createRequire }, { pathToFileURL }] = await Promise.all([
+          import('node:module'),
+          import('node:url'),
+        ])
         return await import(/* @vite-ignore */pathToFileURL(createRequire(this.ctx.baseUrl!).resolve(name)).href)
       }
     }, getOuterStack)
