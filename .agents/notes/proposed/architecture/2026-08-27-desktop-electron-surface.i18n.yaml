@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-08-27-desktop-electron-surface.md
-2026-08-27-desktop-electron-surface.md: 14a9bddd1473a745ae75afa5432ce23f42661f6a
-2026-08-27-desktop-electron-surface.zh.md: b00fe86f5e18337b369bbc4c9162015f633a80c5
+2026-08-27-desktop-electron-surface.md: 9b34b5dab591a06a990cdbf081c4ede1f58d8627
+2026-08-27-desktop-electron-surface.zh.md: 915a8fb3bd5e509bff7703690c37ae035a54ec53

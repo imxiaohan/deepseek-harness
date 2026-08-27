@@ -1,13 +1,13 @@
 import { defineConfig } from 'tsdown'
 
 /**
- * The desktop shell ships one entry: the Electron `main` referenced by
- * package.json. The root tsdown builds only `lib/types/index.js`, so this
- * override points at `lib/types/main.js` instead. Declarations come from
- * `tsc -b` (dts: false), matching every app package.
+ * The desktop shell ships the Electron main, host-child, and preload entries.
+ * The root tsdown builds only `lib/types/index.js`, so this override names the
+ * three application entries. Declarations come from `tsc -b` (dts: false),
+ * matching every app package.
  */
 export default defineConfig({
-  entry: ['lib/types/main.js', 'lib/types/host.js'],
+  entry: ['lib/types/main.js', 'lib/types/host.js', 'lib/types/preload.js'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',
@@ -15,7 +15,8 @@ export default defineConfig({
   fixedExtension: false,
   dts: false,
   clean: false,
-  // `electron` resolves to Electron's built-in module inside the main
-  // process; bundling the npm package would inline its binary-path resolver.
-  external: ['electron'],
+  // `electron` and `electron/main` resolve to Electron's built-in modules
+  // inside the main process; bundling the npm package would inline its
+  // binary-path resolver.
+  deps: { neverBundle: ['electron', 'electron/main'] },
 })

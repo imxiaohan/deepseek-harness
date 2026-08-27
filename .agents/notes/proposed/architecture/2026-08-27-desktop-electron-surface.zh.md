@@ -48,7 +48,7 @@ Web 载体上，每个 `/api` 请求在分发前经过 Host/Origin 浏览器信�
 ### 里程碑
 
 - M1，薄壳：Electron 主进程启动 Web profile，窗口加载经认证的回环 URL（`BrowserAuth.authenticatedUrl`）。以零载体工作量验证打包、签名、自动更新与系统通知的发出（应答路径属 M3），且不得成为终态。落地发现：profile 树运行在宿主子进程中——同一二进制以 `ELECTRON_RUN_AS_NODE=1` 运行——因为 vendored Loader 的插件导入走 Node 内部 ESM loader 快速路径，而 Electron 主进程不暴露它；Loader 的回退现在改为按配置树解析（见 vendor 修改日志），且壳冻结用户 patch 热重载，因为 vendored 配置 HMR 服务要求 `--expose-internals`。
-- M2，桌面 bundle 与 IPC 载体：自定义协议、preload 传输、去掉 webserver 各行；该表面不再监听任何端口。
+- M2，桌面 bundle 与 IPC 载体：自定义协议、preload 传输、去掉 webserver 各行；该表面不再监听任何端口。落地形态：插件树保留在里程碑 1 的宿主子进程中；渲染侧 fetch 与流帧经 Electron 主进程中继（消息式，直到延迟证据要求 `MessageChannelMain` 端口）；preload 以 `contextIsolation: false` 安装钩子使 `Response` 值按引用过界，载体的信任线是主进程的发送方门；虚拟 `webServer` 的 `host` getter 返回合成的回环权威，因为依赖 bind 的消费者（目录选择器的 boot 采样）会读取它——`port` 抛错。
 - M3，原生 capability provider：Electron 目录选择器、钥匙串凭据、深链与通知应答。
 - M4，分发加固：若有证据需要，把宿主树 fork 进子进程做崩溃隔离——载体接口在该 fork 后保持不变——以及更新通道。
 

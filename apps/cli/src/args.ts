@@ -168,6 +168,21 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
       resolved = resolveBoot(web, 'web', options, args)
     })
 
+  const desktop = program.command('desktop').description('boot the desktop profile (alias of --profile desktop); the desktop app\'s own flags follow')
+  desktop
+    .helpOption(false)
+    .allowUnknownOption()
+    .passThroughOptions()
+    .enablePositionalOptions()
+    .argument('[args...]', 'arguments for the desktop app (see: dsh desktop --help)')
+    .option('--patch <path>', 'extra patch-list overlay applied after the profile layer (repeatable)', collect)
+    .option('--dump-config', 'print the composed desktop-profile tree (with the user layer and any --patch) and exit')
+    .option('--dump-default-config', 'print the desktop profile\'s bundle layers (no user layer) and exit')
+    .action((args: string[], options: BootOptions) => {
+      rejectParentOptions('desktop')
+      resolved = resolveBoot(desktop, 'desktop', options, args)
+    })
+
   const plugin = program.command('plugin').description('manage a profile\'s plugins by forwarding the remaining arguments to pnpm in the profile directory')
   plugin
     .requiredOption('--profile <name>', 'the profile whose plugins to manage (initialized on first use)')
