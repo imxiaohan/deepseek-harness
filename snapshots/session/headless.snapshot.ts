@@ -1,4 +1,4 @@
-/** Recorded-session replay through the shipped headless `dsh` profile. */
+/** Recorded-session replay through shipped direct-task `dsh` profiles. */
 
 import { cp, copyFile, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -41,7 +41,8 @@ import { resolvePwshPath } from '@deepseek-ai/dsh-pwsh-local'
 import { parseSessionLog } from '@deepseek-ai/dsh-llm-replay'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
-const snapshotsRoot = fileURLToPath(new URL('./', import.meta.url))
+const sessionSnapshotsRoot = fileURLToPath(new URL('./', import.meta.url))
+const desktopSnapshotsRoot = fileURLToPath(new URL('../desktop/', import.meta.url))
 const dshBin = join(repoRoot, 'apps/cli/src/bin.ts')
 const tsconfigPath = join(repoRoot, 'tsconfig.json')
 const editingCordisSkill = join(
@@ -69,7 +70,7 @@ interface JsonObject {
   [key: string]: unknown
 }
 
-interface HeadlessScenario {
+interface DirectTaskScenario {
   readonly name: string
   readonly dir: string
   readonly manifest: SnapshotManifest & {
@@ -127,13 +128,13 @@ async function persistedSessions(cwd: string): Promise<SessionLog[]> {
   })
 }
 
-async function fixtureSessions(scenario: HeadlessScenario): Promise<string[]> {
+async function fixtureSessions(scenario: DirectTaskScenario): Promise<string[]> {
   const files = sessionFixtureNames(await readdir(scenario.dir))
   return Promise.all(files.map(file => readFile(join(scenario.dir, file), 'utf8')))
 }
 
 async function writeSessionFixtures(
-  scenario: HeadlessScenario,
+  scenario: DirectTaskScenario,
   actualLogs: readonly SessionLog[],
   existing: readonly string[],
   ctx: NormalizeContext,
@@ -179,7 +180,7 @@ async function writeSessionFixtures(
     if (schemaOwner === scenario.name) {
       await writeFile(
         join(scenario.dir, 'tool-schemas.expected.json'),
-        formatToolSchemasSnapshot(schemas[0] as unknown[], schemas.slice(1)),
+        formatToolSchemasSnapshot(schemas[0] ?? [], schemas.slice(1)),
       )
     }
   }
@@ -287,7 +288,7 @@ function stderrFromSession(log: string): string {
     const data = record.data as JsonObject | undefined
     if (record.type === 'reasoning-chunks') {
       if (!Array.isArray(data?.texts) || data.texts.some(text => typeof text !== 'string')) {
-        throw new Error('headless snapshot reasoning chunks have invalid text')
+        throw new Error('direct-task snapshot reasoning chunks have invalid text')
       }
       for (const text of data.texts as string[]) appendReasoning(text)
       continue
@@ -300,7 +301,7 @@ function stderrFromSession(log: string): string {
     const chunk = data?.chunk as JsonObject | undefined
     switch (chunk?.type) {
       case 'reasoning-delta':
-        if (typeof chunk.text !== 'string') throw new Error('headless snapshot reasoning delta has invalid text')
+        if (typeof chunk.text !== 'string') throw new Error('direct-task snapshot reasoning delta has invalid text')
         appendReasoning(chunk.text)
         break
       case 'block-start':
@@ -325,7 +326,7 @@ function stderrFromSession(log: string): string {
   if (reason?.kind !== 'error') return output
   const error = reason.error as JsonObject | undefined
   if (typeof error?.code !== 'string' || typeof error.message !== 'string') {
-    throw new Error('headless snapshot error reason has no code and message')
+    throw new Error('direct-task snapshot error reason has no code and message')
   }
   return `${output}dsh: ${error.code}: ${error.message}\n`
 }
@@ -340,10 +341,10 @@ function modelFromSession(log: string): { provider: string; model: string } {
       return { provider: config.provider, model: config.model }
     }
   }
-  throw new Error('headless snapshot session has no request model')
+  throw new Error('direct-task snapshot session has no request model')
 }
 
-async function seedWorkspace(scenario: HeadlessScenario, cwd: string): Promise<void> {
+async function seedWorkspace(scenario: DirectTaskScenario, cwd: string): Promise<void> {
   const source = join(scenario.dir, 'workspace')
   if (existsSync(source)) {
     for (const entry of await readdir(source)) {
@@ -393,23 +394,25 @@ const workspaceSetups: Record<string, (cwd: string) => Promise<void>> = {
   },
 }
 
-async function collectScenarios(): Promise<HeadlessScenario[]> {
-  const scenarios: HeadlessScenario[] = []
-  for (const entry of await readdir(snapshotsRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const dir = join(snapshotsRoot, entry.name)
-    const manifestPath = join(dir, 'snapshot.yml')
-    if (!existsSync(manifestPath)) continue
-    const manifest = parseSnapshotManifest(await readFile(manifestPath, 'utf8'), manifestPath)
-    if (manifest.profile !== 'headless' || manifest.composition === undefined) continue
-    if (manifest.recording === undefined || manifest.header === undefined) {
-      throw new Error(`${entry.name}: a headless corpus manifest needs recording and header metadata`)
+async function collectScenarios(): Promise<DirectTaskScenario[]> {
+  const scenarios: DirectTaskScenario[] = []
+  for (const root of [sessionSnapshotsRoot, desktopSnapshotsRoot]) {
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const dir = join(root, entry.name)
+      const manifestPath = join(dir, 'snapshot.yml')
+      if (!existsSync(manifestPath)) continue
+      const manifest = parseSnapshotManifest(await readFile(manifestPath, 'utf8'), manifestPath)
+      if (!['headless', 'desktop'].includes(manifest.profile) || manifest.composition === undefined) continue
+      if (manifest.recording === undefined || manifest.header === undefined) {
+        throw new Error(`${entry.name}: a direct-task corpus manifest needs recording and header metadata`)
+      }
+      scenarios.push({
+        name: entry.name,
+        dir,
+        manifest: { ...manifest, composition: manifest.composition, recording: manifest.recording, header: manifest.header },
+      })
     }
-    scenarios.push({
-      name: entry.name,
-      dir,
-      manifest: { ...manifest, composition: manifest.composition, recording: manifest.recording, header: manifest.header },
-    })
   }
   return scenarios.sort((left, right) => left.name.localeCompare(right.name))
 }
@@ -421,35 +424,35 @@ const hasPwsh = spawnSync(
   { encoding: 'utf8' },
 ).status === 0
 const scenarioByName = new Map(scenarios.map(scenario => [scenario.name, scenario]))
-const compositionOwners = new Map<string, HeadlessScenario>()
-const headerPins = new Map<string, HeadlessScenario>()
+const compositionOwners = new Map<string, DirectTaskScenario>()
+const headerPins = new Map<string, DirectTaskScenario>()
 for (const scenario of scenarios) {
   const { composition, header } = scenario.manifest
   if (existsSync(join(scenario.dir, 'cordis.yml'))) {
-    if (compositionOwners.has(composition)) throw new Error(`headless composition ${composition} has multiple patch owners`)
+    if (compositionOwners.has(composition)) throw new Error(`direct-task composition ${composition} has multiple patch owners`)
     compositionOwners.set(composition, scenario)
   }
   if (header.pin === true) {
     const key = `${composition}/${header.class}`
-    if (headerPins.has(key)) throw new Error(`headless header class ${key} has multiple pins`)
+    if (headerPins.has(key)) throw new Error(`direct-task header class ${key} has multiple pins`)
     headerPins.set(key, scenario)
   }
 }
 
-function ownerOf(scenario: HeadlessScenario): HeadlessScenario {
+function ownerOf(scenario: DirectTaskScenario): DirectTaskScenario {
   const owner = compositionOwners.get(scenario.manifest.composition)
   if (owner === undefined) throw new Error(`${scenario.name}: composition has no cordis.yml owner`)
   return owner
 }
 
-function pinOf(scenario: HeadlessScenario): HeadlessScenario {
+function pinOf(scenario: DirectTaskScenario): DirectTaskScenario {
   const { composition, header } = scenario.manifest
   const pin = headerPins.get(`${composition}/${header.class}`)
   if (pin === undefined) throw new Error(`${scenario.name}: composition/header class has no pin`)
   return pin
 }
 
-async function verifyHeaders(scenario: HeadlessScenario, actualLogs: readonly SessionLog[], ctx: NormalizeContext): Promise<void> {
+async function verifyHeaders(scenario: DirectTaskScenario, actualLogs: readonly SessionLog[], ctx: NormalizeContext): Promise<void> {
   const pin = pinOf(scenario)
   const fixture = await readFile(join(pin.dir, 'session.jsonl'), 'utf8')
   const pinned = normalizedHeaders(fixture, fixtureContext(fixture))
@@ -459,16 +462,20 @@ async function verifyHeaders(scenario: HeadlessScenario, actualLogs: readonly Se
   const promptOwner = scenarioByName.get(pin.manifest.header.systemPromptSource ?? pin.name)
   const schemaOwner = scenarioByName.get(pin.manifest.header.toolSchemasSource ?? pin.name)
   if (promptOwner === undefined || schemaOwner === undefined) {
-    throw new Error(`${scenario.name}: header sidecar source is not a headless scenario`)
+    throw new Error(`${scenario.name}: header sidecar source is not a direct-task scenario`)
   }
   const prompt = await readFile(join(promptOwner.dir, 'system-prompt.expected.md'), 'utf8')
   const schemas = parseToolSchemasSnapshot(await readFile(join(schemaOwner.dir, 'tool-schemas.expected.json'), 'utf8'))
   const schemaSets = [schemas.initial, ...schemas.changes]
   expect(schemaSets, `${scenario.name}: pin tool-schema count`).toHaveLength(pinned.length)
-  const reconstructed = pinned.map((header, index) => restorePinnedToolSchemas(
-    header,
-    schemaSets[index] as unknown[],
-  ))
+  const reconstructed = pinned.map((header, index) => {
+    const schemas = schemaSets[index] as unknown[]
+    if (header !== null && typeof header === 'object' && !Array.isArray(header) && !('tools' in header)) {
+      expect(schemas, `${scenario.name}: absent tool-schema sidecar`).toEqual([])
+      return header
+    }
+    return restorePinnedToolSchemas(header, schemas)
+  })
 
   const childPrompts = new Map<number, string>()
   const childSchemas = new Map<number, unknown[][]>()
@@ -499,7 +506,7 @@ async function verifyHeaders(scenario: HeadlessScenario, actualLogs: readonly Se
   }
 }
 
-describe('headless recorded-session snapshots', () => {
+describe('direct-task recorded-session snapshots', () => {
   it('gives every composition and header class exactly one pin', () => {
     for (const scenario of scenarios) {
       expect(ownerOf(scenario), `${scenario.name}: composition owner`).toBeDefined()
@@ -521,8 +528,8 @@ describe('headless recorded-session snapshots', () => {
   })
 
   it('keeps packed chunk rows logically equal to their unpacked recording', async () => {
-    const source = await readFile(join(snapshotsRoot, 'hook-cc-pretool-deny', 'session.jsonl'), 'utf8')
-    const packed = await readFile(join(snapshotsRoot, 'packed-chunks', 'session.jsonl'), 'utf8')
+    const source = await readFile(join(sessionSnapshotsRoot, 'hook-cc-pretool-deny', 'session.jsonl'), 'utf8')
+    const packed = await readFile(join(sessionSnapshotsRoot, 'packed-chunks', 'session.jsonl'), 'utf8')
     const rowTypes = records(packed).flatMap((record) => {
       const type = record.type
       return type === 'text-chunks' || type === 'reasoning-chunks' || type === 'tool-call-chunks' ? [type] : []
@@ -578,7 +585,7 @@ describe('headless recorded-session snapshots', () => {
       || scenario.manifest.platform === 'pwsh' && !hasPwsh
       || mode === 'record' && scenario.manifest.recording === 'authored'
     const scenarioTest = skipped ? it.skip : mode === 'replay' ? it.concurrent : it
-    scenarioTest(`${mode}s ${scenario.name} through dsh --profile headless`, async () => {
+    scenarioTest(`${mode}s ${scenario.name} through dsh --profile ${scenario.manifest.profile}`, async () => {
       let fixtures = await fixtureSessions(scenario)
       const primaryFixture = fixtures[0]
       if (primaryFixture === undefined) throw new Error(`${scenario.name}: missing primary session fixture`)
@@ -593,7 +600,7 @@ describe('headless recorded-session snapshots', () => {
       }
       const composition = ownerOf(scenario)
       const baseComposition = compositionOwners.get('default')
-      if (baseComposition === undefined) throw new Error('headless corpus has no default composition')
+      if (baseComposition === undefined) throw new Error('direct-task corpus has no default composition')
       const fixtureFiles = sessionFixtureNames(await readdir(scenario.dir))
       const replaying = mode !== 'record'
       const compositionPatch = join(composition.dir, replaying ? 'cordis.snapshot.yml' : 'cordis.yml')
@@ -615,13 +622,13 @@ describe('headless recorded-session snapshots', () => {
       let result: Awaited<ReturnType<typeof runLoaderSmoke>>
       try {
         result = await runLoaderSmoke({
-          label: `${scenario.name} headless snapshot`,
+          label: `${scenario.name} direct-task snapshot`,
           tempDirPrefix: 'dsh-log-snap-',
           ...(scenario.manifest.workspace?.parent === 'home' ? { tempDirParent: homedir() } : {}),
           binScript: dshBin,
           configPath: join(baseComposition.dir, 'cordis.yml'),
           binArgs: [
-            '--profile', 'headless',
+            '--profile', scenario.manifest.profile,
             ...patches.flatMap(file => ['--patch', file]),
             task,
           ],

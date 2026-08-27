@@ -1,0 +1,13 @@
+# Composition owner for the assembled desktop transcript. The scenario is
+# authored, so live recording is intentionally unsupported; these rows provide
+# the existing shipped one-shot driver if an owner inspection loads the patch.
+
+- insert:
+    - id: headless-startup
+      name: '@deepseek-ai/dsh-headless/startup'
+
+    - id: headless-runner
+      name: '@deepseek-ai/dsh-headless'
+      inject: [headlessStartup]
+      config:
+        task: !!js ctx.headlessStartup.task
