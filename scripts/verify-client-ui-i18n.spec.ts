@@ -49,14 +49,64 @@ describe('Client UI i18n source check', () => {
 
   it('rejects copy passed to Electron-native presentation APIs', () => {
     expect(findUiI18nViolations('apps/desktop/src/main.ts', `
-      const window = new BrowserWindow({ title: 'Desktop window' })
-      new Notification({ title: 'Fatal error', body: 'Host failed to start' }).show()
-      dialog.showErrorBox('Fatal error', 'Host process exited')
-      dialog.showMessageBox(window, { message: 'Try again later', buttons: ['Close dialog'] })
+      import {
+        BrowserWindow as ElectronWindow,
+        Notification as NativeNotification,
+        dialog as nativeDialog,
+      } from 'electron/main'
+      import * as electron from 'electron/main'
+      const window = new ElectronWindow({ title: 'Desktop window' })
+      new NativeNotification({ title: 'Fatal error', body: 'Host failed to start' }).show()
+      nativeDialog.showErrorBox('Fatal error', 'Host process exited')
+      nativeDialog.showMessageBox(window, { message: 'Try again later', buttons: ['Close dialog'] })
+      new electron.BrowserWindow({ title: 'Namespace window' })
+      new electron.Notification({ title: 'Namespace fatal', body: 'Namespace host failure' }).show()
+      electron.dialog.showErrorBox('Namespace fatal', 'Namespace host exited')
+      function reportFatal(_stage: string, _error?: unknown): void {}
+      reportFatal('fatal.host.startFailed', new Error('Fatal wrapper copy'))
+      reportFatal('fatal.host.startFailed', (new Error('Parenthesized fatal copy')))
+      reportFatal('fatal.host.startFailed', new Error('Asserted fatal copy') as unknown)
+      reportFatal('fatal.host.startFailed', new Error('Satisfied fatal copy') satisfies unknown)
+      reportFatal('fatal.host.startFailed', new Error('Non-null fatal copy')!)
+      reportFatal(
+        'fatal.host.startFailed',
+        true ? new Error('Conditional fatal copy') : Error('Fallback fatal copy'),
+      )
+      reportFatal('fatal.host.startFailed', Error('Callable fatal copy'))
     `).map(violation => violation.text)).toEqual([
       'Desktop window', 'Fatal error', 'Host failed to start', 'Fatal error',
-      'Host process exited', 'Try again later', 'Close dialog',
+      'Host process exited', 'Try again later', 'Close dialog', 'Namespace window',
+      'Namespace fatal', 'Namespace host failure', 'Namespace fatal',
+      'Namespace host exited', 'Fatal wrapper copy', 'Parenthesized fatal copy',
+      'Asserted fatal copy', 'Satisfied fatal copy', 'Non-null fatal copy',
+      'Conditional fatal copy', 'Fallback fatal copy', 'Callable fatal copy',
     ])
+  })
+
+  it('does not mistake shadowed Electron or fatal-reporter names for presentation bindings', () => {
+    expect(findUiI18nViolations('apps/desktop/src/main.ts', `
+      import {
+        BrowserWindow as ElectronWindow,
+        Notification as NativeNotification,
+        dialog as nativeDialog,
+      } from 'electron/main'
+      import * as electron from 'electron/main'
+      function reportFatal(_stage: string, _error?: unknown): void {}
+      function shadow(
+        ElectronWindow: any,
+        NativeNotification: any,
+        nativeDialog: any,
+        electron: any,
+        reportFatal: any,
+      ): void {
+        new ElectronWindow({ title: 'Shadow window' })
+        new NativeNotification({ body: 'Shadow notification' })
+        nativeDialog.showErrorBox('Shadow dialog', 'Shadow dialog body')
+        new electron.BrowserWindow({ title: 'Shadow namespace window' })
+        electron.dialog.showErrorBox('Shadow namespace dialog', 'Shadow namespace body')
+        reportFatal('fatal.host.startFailed', new Error('Shadow fatal detail'))
+      }
+    `)).toEqual([])
   })
 
   it('accepts translated copy, dynamic values, structural attributes, and language tokens', () => {

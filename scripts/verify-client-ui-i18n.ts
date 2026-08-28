@@ -48,8 +48,8 @@ const IMMUTABLE_LANGUAGE_TOKENS = new Set([
   'undefined',
 ])
 const LOCALE_KEY = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)+$/
-const NATIVE_COPY_CONSTRUCTORS = new Set(['BrowserWindow', 'Notification'])
-const NATIVE_COPY_METHODS = new Set(['showErrorBox', 'showMessageBox', 'showMessageBoxSync'])
+const ELECTRON_COPY_CONSTRUCTORS = new Set(['BrowserWindow', 'Notification'])
+const ELECTRON_COPY_METHODS = new Set(['showErrorBox', 'showMessageBox', 'showMessageBoxSync'])
 
 /** One hard-coded product-copy occurrence. */
 export interface UiI18nViolation {
@@ -108,14 +108,68 @@ function looksLikeNaturalText(text: string): boolean {
  */
 export function findUiI18nViolations(file: string, sourceText: string): UiI18nViolation[] {
   if (localeOwner(file)) return []
-  const source = ts.createSourceFile(
+  const normalizedFile = file.replaceAll('\\', '/')
+  const scriptKind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  let source = ts.createSourceFile(
     file,
     sourceText,
     ts.ScriptTarget.Latest,
     true,
-    file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    scriptKind,
   )
+  const needsBindings = normalizedFile === 'apps/desktop/src/main.ts'
+    || source.statements.some(statement =>
+      ts.isImportDeclaration(statement)
+      && ts.isStringLiteral(statement.moduleSpecifier)
+      && (statement.moduleSpecifier.text === 'electron' || statement.moduleSpecifier.text === 'electron/main'))
+  let checker: ts.TypeChecker | undefined
+  if (needsBindings) {
+    const options: ts.CompilerOptions = { noLib: true, noResolve: true, target: ts.ScriptTarget.Latest }
+    const host = ts.createCompilerHost(options, true)
+    host.fileExists = candidate => candidate === file
+    host.getSourceFile = candidate => candidate === file ? source : undefined
+    host.readFile = candidate => candidate === file ? sourceText : undefined
+    const program = ts.createProgram([file], options, host)
+    source = program.getSourceFile(file) ?? source
+    checker = program.getTypeChecker()
+  }
   const violations = new Map<number, UiI18nViolation>()
+  const electronConstructors = new Map<ts.Symbol, string>()
+  const electronDialogs = new Set<ts.Symbol>()
+  const electronNamespaces = new Set<ts.Symbol>()
+  let fatalReporter: ts.Symbol | undefined
+
+  for (const statement of source.statements) {
+    if (
+      !ts.isImportDeclaration(statement)
+      || !ts.isStringLiteral(statement.moduleSpecifier)
+      || (statement.moduleSpecifier.text !== 'electron' && statement.moduleSpecifier.text !== 'electron/main')
+      || statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
+    ) continue
+    const bindings = statement.importClause?.namedBindings
+    if (bindings === undefined) continue
+    if (ts.isNamespaceImport(bindings)) {
+      const symbol = checker?.getSymbolAtLocation(bindings.name)
+      if (symbol !== undefined) electronNamespaces.add(symbol)
+      continue
+    }
+    for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue
+      const imported = element.propertyName?.text ?? element.name.text
+      const symbol = checker?.getSymbolAtLocation(element.name)
+      if (symbol === undefined) continue
+      if (ELECTRON_COPY_CONSTRUCTORS.has(imported)) {
+        electronConstructors.set(symbol, imported)
+      } else if (imported === 'dialog') {
+        electronDialogs.add(symbol)
+      }
+    }
+  }
+  if (normalizedFile === 'apps/desktop/src/main.ts') {
+    const declaration = source.statements.find((statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === 'reportFatal')
+    if (declaration?.name !== undefined) fatalReporter = checker?.getSymbolAtLocation(declaration.name)
+  }
 
   const report = (
     node: ts.Node,
@@ -142,6 +196,7 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
     node: ts.Expression,
     reason: string,
     naturalOnly = false,
+    traverseDynamicArguments = false,
   ): void => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       report(node, node.text, reason, naturalOnly)
@@ -156,8 +211,13 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
       )
       return
     }
-    if (ts.isCallExpression(node)) {
-      // A call result is dynamic; copy-bearing arguments are visited through their own syntax.
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      if (traverseDynamicArguments) {
+        for (const argument of node.arguments ?? []) {
+          collectExpression(argument, reason, naturalOnly, true)
+        }
+      }
+      // A call or constructor result is dynamic outside a known presentation sink.
       return
     }
     if (
@@ -166,30 +226,32 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
       || ts.isSatisfiesExpression(node)
       || ts.isNonNullExpression(node)
     ) {
-      collectExpression(node.expression, reason, naturalOnly)
+      collectExpression(node.expression, reason, naturalOnly, traverseDynamicArguments)
       return
     }
     if (ts.isConditionalExpression(node)) {
-      collectExpression(node.whenTrue, reason, naturalOnly)
-      collectExpression(node.whenFalse, reason, naturalOnly)
+      collectExpression(node.whenTrue, reason, naturalOnly, traverseDynamicArguments)
+      collectExpression(node.whenFalse, reason, naturalOnly, traverseDynamicArguments)
       return
     }
     if (ts.isBinaryExpression(node)) {
       if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-        collectExpression(node.right, reason, naturalOnly)
+        collectExpression(node.right, reason, naturalOnly, traverseDynamicArguments)
       } else if (
         node.operatorToken.kind === ts.SyntaxKind.PlusToken
         || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
         || node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
       ) {
-        collectExpression(node.left, reason, naturalOnly)
-        collectExpression(node.right, reason, naturalOnly)
+        collectExpression(node.left, reason, naturalOnly, traverseDynamicArguments)
+        collectExpression(node.right, reason, naturalOnly, traverseDynamicArguments)
       }
       return
     }
     if (ts.isArrayLiteralExpression(node)) {
       for (const element of node.elements) {
-        if (ts.isExpression(element)) collectExpression(element, reason, naturalOnly)
+        if (ts.isExpression(element)) {
+          collectExpression(element, reason, naturalOnly, traverseDynamicArguments)
+        }
       }
       return
     }
@@ -199,7 +261,12 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
           const name = propertyName(property.name)
           const propertyOwnsCopy = name !== undefined
             && (COPY_NAME.test(name) || COPY_SUFFIX.test(name))
-          collectExpression(property.initializer, reason, naturalOnly || !propertyOwnsCopy)
+          collectExpression(
+            property.initializer,
+            reason,
+            naturalOnly || !propertyOwnsCopy,
+            traverseDynamicArguments,
+          )
         }
       }
     }
@@ -234,6 +301,42 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
     return false
   }
 
+  const electronConstructor = (expression: ts.LeftHandSideExpression): string | undefined => {
+    if (ts.isIdentifier(expression)) {
+      const symbol = checker?.getSymbolAtLocation(expression)
+      return symbol === undefined ? undefined : electronConstructors.get(symbol)
+    }
+    if (
+      ts.isPropertyAccessExpression(expression)
+      && ts.isIdentifier(expression.expression)
+      && ELECTRON_COPY_CONSTRUCTORS.has(expression.name.text)
+    ) {
+      const symbol = checker?.getSymbolAtLocation(expression.expression)
+      if (symbol !== undefined && electronNamespaces.has(symbol)) return expression.name.text
+    }
+    return undefined
+  }
+
+  const electronDialogMethod = (expression: ts.LeftHandSideExpression): string | undefined => {
+    if (!ts.isPropertyAccessExpression(expression) || !ELECTRON_COPY_METHODS.has(expression.name.text)) {
+      return undefined
+    }
+    const owner = expression.expression
+    if (ts.isIdentifier(owner)) {
+      const symbol = checker?.getSymbolAtLocation(owner)
+      if (symbol !== undefined && electronDialogs.has(symbol)) return expression.name.text
+    }
+    if (
+      ts.isPropertyAccessExpression(owner)
+      && owner.name.text === 'dialog'
+      && ts.isIdentifier(owner.expression)
+    ) {
+      const symbol = checker?.getSymbolAtLocation(owner.expression)
+      if (symbol !== undefined && electronNamespaces.has(symbol)) return expression.name.text
+    }
+    return undefined
+  }
+
   const visit = (node: ts.Node): void => {
     if (ts.isJsxText(node)) report(node, node.text, 'JSX text')
 
@@ -247,25 +350,29 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
       }
     }
 
-    if (
-      ts.isNewExpression(node)
-      && ts.isIdentifier(node.expression)
-      && NATIVE_COPY_CONSTRUCTORS.has(node.expression.text)
-    ) {
-      for (const argument of node.arguments ?? []) {
-        collectExpression(argument, `${node.expression.text} option`)
+    if (ts.isNewExpression(node)) {
+      const constructor = electronConstructor(node.expression)
+      if (constructor !== undefined) {
+        for (const argument of node.arguments ?? []) {
+          collectExpression(argument, `${constructor} option`)
+        }
       }
     }
 
-    if (
-      ts.isCallExpression(node)
-      && ts.isPropertyAccessExpression(node.expression)
-      && ts.isIdentifier(node.expression.expression)
-      && node.expression.expression.text === 'dialog'
-      && NATIVE_COPY_METHODS.has(node.expression.name.text)
-    ) {
-      for (const argument of node.arguments) {
-        collectExpression(argument, `dialog.${node.expression.name.text} argument`)
+    if (ts.isCallExpression(node)) {
+      const method = electronDialogMethod(node.expression)
+      if (method !== undefined) {
+        for (const argument of node.arguments) {
+          collectExpression(argument, `dialog.${method} argument`)
+        }
+      }
+    }
+
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && fatalReporter !== undefined) {
+      if (checker?.getSymbolAtLocation(node.expression) === fatalReporter) {
+        for (const argument of node.arguments) {
+          collectExpression(argument, 'reportFatal argument', false, true)
+        }
       }
     }
 

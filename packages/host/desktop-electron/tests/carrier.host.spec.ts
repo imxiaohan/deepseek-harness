@@ -679,6 +679,7 @@ describe('the in-memory carrier', () => {
     let receive: ((message: DesktopIpcMessage) => void) | undefined
     let bodyReadStarted = false
     let bodyCancelled = false
+    let rejectBodyCancellation: ((error: Error) => void) | undefined
     let calls = 0
     const dispose = serveDesktopHost({
       send: (message) => {
@@ -697,7 +698,7 @@ describe('the in-memory carrier', () => {
             start() { bodyReadStarted = true },
             cancel() {
               bodyCancelled = true
-              return Promise.reject(new Error('cancel cleanup failed'))
+              return new Promise<void>((_resolve, reject) => { rejectBodyCancellation = reject })
             },
           }))
         }
@@ -721,8 +722,15 @@ describe('the in-memory carrier', () => {
     })
     receive?.({ t: 'fetch', id: DesktopIpcId('aborted-read'), url: 'http://127.0.0.1/abort', method: 'GET', headers: {} })
     await vi.waitFor(() => { expect(bodyReadStarted).toBe(true) })
-    await dispose()
-    expect(bodyCancelled).toBe(true)
+    const disposal = dispose()
+    await vi.waitFor(() => { expect(bodyCancelled).toBe(true) })
+    let disposed = false
+    void disposal.then(() => { disposed = true })
+    await Promise.resolve()
+    expect(disposed).toBe(false)
+    rejectBodyCancellation?.(new Error('cancel cleanup failed'))
+    await disposal
+    expect(disposed).toBe(true)
     expect(receive).toBeUndefined()
   })
 

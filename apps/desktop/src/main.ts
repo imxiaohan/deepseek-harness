@@ -129,7 +129,11 @@ function nativeCopy(): ReturnType<typeof desktopNativeCopy> {
 /** Report a fatal shell condition through every surface a packaged app has. */
 function reportFatal(stage: DesktopFatalStage, error?: unknown): void {
   const copy = nativeCopy()
-  const detail = error === undefined ? undefined : error instanceof Error ? error.message : inspect(error)
+  const detail = error === undefined
+    ? undefined
+    : typeof error === 'string'
+      ? error
+      : error instanceof Error ? error.message : inspect(error)
   const text = detail === undefined
     ? `${copy.fatalPrefix}: ${copy.fatalStages[stage]}`
     : `${copy.fatalPrefix}: ${copy.fatalStages[stage]}: ${detail}`

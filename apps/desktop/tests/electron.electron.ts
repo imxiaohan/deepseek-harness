@@ -378,6 +378,7 @@ describe('the built Electron desktop application', () => {
       waitForEvent(fixture, 'dispose-end'),
     ])
     expect(fixture.output.stderr).toContain('renderer process exited')
+    expect(fixture.output.stderr).toMatch(/renderer process exited: crashed; exit code \d+/)
     expect(processIsAlive(hostPid)).toBe(false)
     await rm(fixture.root, { recursive: true, force: true })
   })

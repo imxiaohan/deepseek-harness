@@ -114,13 +114,19 @@ function startFetch(
   const abort = new AbortController()
   const { signal } = abort
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let bodyCancellation: Promise<void> | undefined
   let reading = false
   let finishBody: (() => void) | undefined
   const bodyDone = new Promise<void>((resolve) => { finishBody = resolve })
   const finish = (): void => { finishBody?.() }
+  const cancelReader = (): Promise<void> => {
+    if (reader === undefined) return Promise.resolve()
+    bodyCancellation ??= Promise.allSettled([reader.cancel(signal.reason)]).then(() => {})
+    return bodyCancellation
+  }
   const cancelBody = (): void => {
     finish()
-    if (reader !== undefined) void reader.cancel(signal.reason).catch(() => {})
+    void cancelReader()
   }
   signal.addEventListener('abort', cancelBody, { once: true })
 
@@ -177,7 +183,7 @@ function startFetch(
       }
     } finally {
       signal.removeEventListener('abort', cancelBody)
-      if (reader !== undefined) await Promise.allSettled([reader.cancel(signal.reason)])
+      await cancelReader()
     }
   })()
 
