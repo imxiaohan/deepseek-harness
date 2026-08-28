@@ -37,11 +37,15 @@ const ROOTS = [
  * A composition carrying the registries a preset contributes to, plus the
  * preset roster.
  * @param roster - roster config, defaulting to the fixture roots.
+ * @param baseUrl - package-resolution base exposed by the harness.
  * @returns the booted context.
  */
-async function harness(roster: Config = { default: 'standard', roots: ROOTS, includeShippedRoot: false, includeUserRoot: false }): Promise<Context> {
+async function harness(
+  roster: Config = { default: 'standard', roots: ROOTS, includeShippedRoot: false, includeUserRoot: false },
+  baseUrl = pathToFileURL(FIXTURES).href + '/',
+): Promise<Context> {
   const ctx = new Context()
-  ctx.baseUrl = pathToFileURL(FIXTURES).href + '/'
+  ctx.baseUrl = baseUrl
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
   // A preset outside this workspace cannot resolve `cordis-plugin-group` by
@@ -104,6 +108,49 @@ describe('composing an agent from a preset', () => {
     await agentOn(scoped, 'sess-absolute-plugin')
 
     expect(imported).toHaveBeenCalledWith(pathToFileURL(plugin).href, expect.any(String), {})
+  })
+
+  it('keeps the harness base when Electron exposes no internal module loader', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-preset-electron-fallback-'))
+    const harnessDir = join(root, 'harness')
+    const packageDir = join(harnessDir, 'node_modules', 'preset-fallback-plugin')
+    const presetRoot = join(root, 'presets')
+    const presetDir = join(presetRoot, 'fallback')
+    const absolutePlugin = join(FIXTURES, 'plugins', 'contribute.js')
+    await mkdir(packageDir, { recursive: true })
+    await mkdir(presetDir, { recursive: true })
+    await writeFile(join(packageDir, 'package.json'), JSON.stringify({
+      name: 'preset-fallback-plugin',
+      type: 'module',
+      exports: { '.': { import: './index.js' } },
+    }))
+    await writeFile(join(packageDir, 'index.js'), await readFile(absolutePlugin, 'utf8'))
+    await writeFile(join(presetDir, COMPOSITION_FILE), [
+      '- id: package',
+      '  name: preset-fallback-plugin',
+      '  config:',
+      '    tool: package-fallback',
+      '- id: absolute',
+      `  name: ${JSON.stringify(absolutePlugin)}`,
+      '  config:',
+      '    tool: absolute-fallback',
+      '',
+    ].join('\n'))
+    const scoped = await harness({
+      default: 'fallback',
+      roots: [{ path: presetRoot, trust: 'user' }],
+      includeShippedRoot: false,
+      includeUserRoot: false,
+    }, pathToFileURL(join(harnessDir, 'noop.js')).href)
+    scoped.loader.internal = undefined
+
+    try {
+      const agent = await agentOn(scoped, 'sess-electron-fallback')
+      expect(toolNames(scoped, agent)).toEqual(['absolute-fallback', 'package-fallback'])
+    } finally {
+      await scoped.fiber.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('gives each session only its own preset\'s tools', async () => {

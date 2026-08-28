@@ -1,5 +1,5 @@
 ---
-description: "dsh 桌面面：与 Web GUI 相同的 harness、roster 与 preset，装进一个带原生集成的 Electron 应用，由 `dsh desktop` 启动。"
+description: "dsh 桌面面：与 Web GUI 相同的 harness、浏览器 roster 与 preset，经零端口 Electron IPC 载体运行，由 `dsh desktop` 启动。"
 kind: "package-bundle"
 ---
 
@@ -11,7 +11,7 @@ kind: "package-bundle"
 
 ## 概述
 
-dsh 桌面面 profile 组合包：叠在 `dsh-base` 上的 `cordis.patch.yml` 镜像 Web bundle 的行集并去掉 HTTP 载体族（`webserver`、`web-runtime`、`web-startup`、`client-hmr`），由 `desktop-electron` 行提供保留行所注入的虚拟 `webServer`，IPC 载体取代所有监听套接字。`dsh desktop`（`--profile desktop` 的别名）启动它。
+dsh 桌面面 profile 组合包：叠在 `dsh-base` 上的 `cordis.patch.yml` 镜像 Web bundle 的行集并去掉 HTTP 载体族（`webserver`、`web-runtime`、`web-startup`、`client-hmr`），由 `desktop-electron` 行提供保留行所注入的虚拟 `webServer`，IPC 载体取代所有监听套接字。`dsh desktop` 启动的 Electron 应用在其宿主子进程中启动该组合；`dsh --profile desktop` 则不创建窗口，直接启动该组合。
 
 ## 目录
 
@@ -40,6 +40,6 @@ dsh 桌面面 profile 组合包：叠在 `dsh-base` 上的 `cordis.patch.yml` �
 <details>
 <summary>维护者工作上下文——点击展开</summary>
 
-本 patch 镜像 `dsh-web-app` 的行集并去掉 HTTP 载体族；`desktop-electron` 行必须先于每个注入 `webServer` 的行挂载。组合的零端口保证即行缺失本身：没有任何会绑定套接字的包参与组合，REAL boot 测试断言虚拟 `webServer` 的语义（`host` 是合成的回环权威；`port` 抛错）。设计记录见[桌面端 note](../../../.agents/notes/proposed/architecture/2026-08-27-desktop-electron-surface.zh.md)。
+本 patch 镜像 `dsh-web-app` 的行集并去掉 HTTP 载体族；`desktop-electron` 行必须先于每个注入 `webServer` 的行挂载。组合的零端口保证即行缺失本身：没有任何会绑定套接字的包参与组合，REAL boot 测试断言虚拟 `webServer` 的语义（`host` 是宿主侧回环权威；`port` 抛错）。设计记录见[桌面载体决策](../../../.agents/notes/implemented/architecture/2026-08-27-desktop-electron-surface.zh.md)。
 
 </details>

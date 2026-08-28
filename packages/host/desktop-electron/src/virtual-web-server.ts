@@ -11,6 +11,7 @@
  * @module @deepseek-ai/dsh-host-desktop-electron/virtual-web-server
  */
 
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { IndexInjection, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 
@@ -23,6 +24,7 @@ export class VirtualWebServer extends Service {
   private readonly exact = new Map<string, WebRoute>()
   private readonly prefixes = new Map<string, WebRoute>()
   private readonly upgrades = new Map<string, WebUpgradeRoute>()
+  private fallbackRegistration: object | undefined
 
   /** Register under the desktop composition's service name `webServer`. */
   constructor(ctx: Context) {
@@ -67,8 +69,17 @@ export class VirtualWebServer extends Service {
    * @returns the disposer releasing the seat.
    */
   registerFallback(handler: WebRoute['handler']): () => void {
+    if (this.fallback !== undefined) {
+      throw new Error('desktop webServer: duplicate fallback route')
+    }
+    const registration = {}
     this.fallback = handler
-    return () => { this.fallback = undefined }
+    this.fallbackRegistration = registration
+    return () => {
+      if (this.fallbackRegistration !== registration) return
+      this.fallback = undefined
+      this.fallbackRegistration = undefined
+    }
   }
 
   /** The accepted fallback seat; kept for the consumer contract, never dispatched. */
@@ -104,14 +115,53 @@ export class VirtualWebServer extends Service {
     return undefined
   }
 
+  /**
+   * Dispatch one custom-scheme asset request through its registered Node HTTP route.
+   * The promise settles when the route ends its response and rejects when the
+   * route handler fails.
+   * @param request - request reconstructed from the Electron scheme URL.
+   * @returns the route's status, headers, and bytes as a Fetch response.
+   */
+  fetchAsset(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const route = this.routeFor(url.pathname)
+    if (route === undefined) return Promise.resolve(new Response('not found', { status: 404 }))
+    return new Promise<Response>((resolve, reject) => {
+      let status = 200
+      let headers: Record<string, string> | undefined
+      const response = {
+        writeHead(nextStatus: number, nextHeaders?: Record<string, string>) {
+          status = nextStatus
+          headers = nextHeaders
+          return response
+        },
+        end(chunk?: Uint8Array) {
+          const body = request.method === 'HEAD' || chunk === undefined
+            ? null
+            : chunk as unknown as BodyInit
+          resolve(new Response(body, {
+            status,
+            ...headers === undefined ? {} : { headers },
+          }))
+          return response
+        },
+      } as unknown as ServerResponse
+      const incoming = {
+        method: request.method,
+        url: `${url.pathname}${url.search}`,
+        headers: Object.fromEntries(request.headers.entries()),
+      } as unknown as IncomingMessage
+      void Promise.resolve(route.handler(incoming, response)).catch(reject)
+    })
+  }
+
   /** There is no listening socket; a port read is a carrier mismatch. */
   get port(): number {
     throw new Error('desktop webServer: the desktop composition listens on no port')
   }
 
   /**
-   * The carrier's synthesized loopback authority — the same value the IPC
-   * bridge mints into every host-side request. Bind-dependent consumers
+   * The host-side authority used by the IPC bridge. Bind-dependent consumers
    * (the directory picker's boot sampling) read it to pick their loopback
    * branch; there is no socket behind it.
    */

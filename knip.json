@@ -686,7 +686,28 @@
         "tests/**/*.ts"
       ],
       "ignoreDependencies": [
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "electron"
+      ]
+    },
+    "apps/desktop": {
+      "entry": [
+        "src/main.ts",
+        "src/host.ts",
+        "src/preload.ts",
+        "tests/**/*.electron.ts",
+        "tests/**/*.spec.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-desktop-app",
+        "@deepseek-ai/dsh-persona",
+        "@deepseek-ai/dsh-tool-ask-user",
+        "@deepseek-ai/dsh-web-app"
       ]
     },
     "packages/subagent/subagent-dsh-sdk": {
@@ -735,6 +756,15 @@
       ]
     },
     "packages/bundle/base": {
+      "ignoreDependencies": [
+        "@deepseek-ai/.+"
+      ]
+    },
+    "packages/bundle/desktop-app": {
+      "entry": [],
+      "project": [
+        "src/**/*.ts"
+      ],
       "ignoreDependencies": [
         "@deepseek-ai/.+"
       ]

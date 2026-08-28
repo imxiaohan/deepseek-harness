@@ -66,8 +66,9 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
-    "js-yaml": "^4.1.0",
     "@deepseek-ai/schemastery": "workspace:^",
+    "import-meta-resolve": "^4.2.0",
+    "js-yaml": "^4.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

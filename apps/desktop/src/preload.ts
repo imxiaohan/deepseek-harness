@@ -2,14 +2,15 @@
  * The desktop preload: installs the IPC-carrier transport as the page global
  * `__DSH_TRANSPORT__` before any client plugin loads. The shell runs with
  * `contextIsolation: false` so the connection client receives the hooks —
- * and their `Response` values — by reference; the carrier's trust line is
- * the main process's sender gate, not the renderer world boundary.
+ * and their `Response` values — by reference; the main process restricts the
+ * IPC handlers to the current trusted main-frame document.
  * @module @deepseek-ai/dsh-desktop/preload
  */
 
 import { ipcRenderer } from 'electron'
 import {
   createDesktopTransport,
+  DesktopIpcId,
   type PreloadOn,
   type PreloadRpc,
 } from '@deepseek-ai/dsh-host-desktop-electron'
@@ -25,7 +26,7 @@ const rpc: PreloadRpc = {
   invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
   on,
   send: (channel, payload) => { ipcRenderer.send(channel, payload) },
-  newId: () => randomUUID(),
+  newId: () => DesktopIpcId(randomUUID()),
 }
 
 ;(globalThis as { __DSH_TRANSPORT__?: unknown }).__DSH_TRANSPORT__ = createDesktopTransport(rpc)

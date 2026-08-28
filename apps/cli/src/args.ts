@@ -10,8 +10,9 @@
  * `dsh --profile tui --resume abc` boots the tui profile with `--resume abc`,
  * and `dsh --profile web -h` prints the web app's help, not this one's.
  *
- * `web` is a hardcoded alias for `--profile web`; `plugin` manages a profile's
- * plugin dependencies by forwarding to pnpm.
+ * `web` is a hardcoded alias for `--profile web`; `desktop` launches the
+ * Electron application over its same-named profile; `plugin` manages a
+ * profile's plugin dependencies by forwarding to pnpm.
  * @module @deepseek-ai/dsh/args
  */
 
@@ -24,6 +25,15 @@ interface ProfileInvocation {
   /** Extra patch-list overlays applied after the profile's own layer, in argv order. */
   patches: string[]
   /** Everything after the launcher's own flags, verbatim, for injected app plugins. */
+  args: string[]
+}
+
+/** Launch the Electron application, whose host child boots the desktop profile. */
+interface DesktopInvocation {
+  mode: 'desktop'
+  /** Extra patch-list overlays passed to the desktop host child, in argv order. */
+  patches: string[]
+  /** Everything after the launcher's own flags, verbatim, for the desktop profile. */
   args: string[]
 }
 
@@ -45,9 +55,9 @@ interface PluginInvocation {
 }
 
 /** The resolved `dsh` invocation. Help, version, and errors exit inside {@link parseDshArgs}. */
-export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation
+export type DshInvocation = ProfileInvocation | DesktopInvocation | DumpConfigInvocation | PluginInvocation
 
-/** Launcher flags shared by the default command and the `web` alias. */
+/** Launcher flags shared by the default command and GUI application commands. */
 interface BootOptions {
   patch?: string[]
   dumpConfig?: boolean
@@ -64,6 +74,7 @@ const collect = (value: string, previous: string[] = []): string[] => [...previo
 const HELP_EXAMPLES = `
 Examples:
   dsh --profile web                          boot the web profile (same as: dsh web)
+  dsh desktop                               open the Electron application
   dsh --profile headless "run the tests"     answer one task, print the result, and exit
   dsh --profile tui --patch ./extra.yml      boot a custom profile with one extra overlay
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app
@@ -168,7 +179,7 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
       resolved = resolveBoot(web, 'web', options, args)
     })
 
-  const desktop = program.command('desktop').description('boot the desktop profile (alias of --profile desktop); the desktop app\'s own flags follow')
+  const desktop = program.command('desktop').description('open the Electron application over the desktop profile; the app\'s own flags follow')
   desktop
     .helpOption(false)
     .allowUnknownOption()
@@ -180,7 +191,10 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
     .option('--dump-default-config', 'print the desktop profile\'s bundle layers (no user layer) and exit')
     .action((args: string[], options: BootOptions) => {
       rejectParentOptions('desktop')
-      resolved = resolveBoot(desktop, 'desktop', options, args)
+      const invocation = resolveBoot(desktop, 'desktop', options, args)
+      resolved = invocation.mode === 'profile'
+        ? { mode: 'desktop', patches: invocation.patches, args: invocation.args }
+        : invocation
     })
 
   const plugin = program.command('plugin').description('manage a profile\'s plugins by forwarding the remaining arguments to pnpm in the profile directory')

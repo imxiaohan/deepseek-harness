@@ -24,7 +24,7 @@ Status: implemented
 
 磁盘走法放弃了什么：只有经由 loader hook 才能解析的包——import map，或根本没有 `node_modules` 的目录树——会被报为损坏。任何受支持的安装都不会产出这种情况，因为 `dsh plugin install` 会把每个插件装在名单旁边。
 
-**只有一个分类器决定一行在哪里解析。** `src/specifier.ts` 拥有这个划分——`cordis:` 内建、preset 相对、绝对文件、包名——挂载的 import 覆写与发现过程的检查都读它。若发现过程按一个基准解析、而挂载按另一个基准 import，那一行会被报告为健康，然后加载失败。
+**只有一个分类器决定一行在哪里解析。** `src/specifier.ts` 拥有这个划分——`cordis:` 内建、preset 相对、绝对文件、包名——挂载的 import 覆写与发现过程的检查都读它。若发现过程按一个基准解析、而挂载按另一个基准 import，那一行会被报告为健康，然后加载失败。Loader 不具备 Node 内部 ESM loader 时，挂载仍保留同一基准：包名通过 `import-meta-resolve` 按 ESM import 条件和 `harnessBase` 解析，规范化的文件 URL 则直接 import。Electron 的 Node 宿主走这条路径，因此 pnpm bin shim 注入的 workspace 级 `NODE_PATH` 不会成为未声明的插件来源。
 
 **可能永远不会启动的行被跳过。** `disabled` 是[加载器唯一会插值](2026-08-11-loader-entry-disabled-interpolation.zh.md)的条目字段：`!!js` 表达式在挂载时对加载器上下文求值，而发现过程无法仅凭文件做到。凡该字段不是缺失、null 或 `false` 的行都不做检查，被禁用的 group 连同其子行一起跳过。每个随附 preset 都用这种方式为 shell 行设门，所以这是常见形状，不是边角。
 

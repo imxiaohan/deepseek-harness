@@ -57,6 +57,10 @@ describe('the desktop profile composition', () => {
     // The web-runtime service exists only behind the dropped web-runtime row;
     // its absence is the HTTP-carrier-row absence made observable.
     expect(ctx!.get('webRuntime')).toBeUndefined()
+    for (const id of ['desktop-electron', 'modules', 'connection', 'api-remotes']) {
+      const entry = [...ctx!.loader.entries()].find(candidate => candidate.options.id === id)
+      expect(entry?.fiber?.state, `entry ${id}`).toBe(FiberState.ACTIVE)
+    }
   })
 
   it('satisfies the retained rows with the virtual webServer', () => {
@@ -66,9 +70,8 @@ describe('the desktop profile composition', () => {
       collectIndexInjections(): readonly unknown[]
     } | undefined
     expect(webServer).toBeDefined()
-    // The carrier's synthesized loopback authority, and the zero-port
-    // surface: a port read is a carrier mismatch, not a value (the HTTP
-    // WebServer would return a real port here).
+    // Host-side routes use loopback URL semantics. A port read is a carrier
+    // mismatch, not a value (the HTTP WebServer would return a real port).
     expect(webServer!.host).toBe('127.0.0.1')
     expect(() => webServer!.port).toThrow(/no port/)
     expect(Array.isArray(webServer!.collectIndexInjections())).toBe(true)
@@ -82,16 +85,112 @@ describe('the desktop profile composition', () => {
     const { injections } = runtime!.bootPayload()
     const boot = injections.find(row => row.name === '__DSH_BOOT__')
     expect(boot).toBeDefined()
+    const modules = ctx!.get('clientModules') as { graph(): unknown } | undefined
+    expect(modules).toBeDefined()
+    expect((boot as { value?: unknown }).value).toBe(modules!.graph())
     // The module registry's own rows (queue script, parser preloads) ride along.
     expect(injections.length).toBeGreaterThan(1)
   })
 
-  it('serves one roster plugin bundle through the carrier lane', () => {
+  it('composes the Web browser roster and phases except for transport-owned HMR', async () => {
+    const webHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-web-parity-'))
+    const previousHome = process.env.DSH_HOME
+    process.env.DSH_HOME = webHome
+    let webCtx: Context | undefined
+    try {
+      webCtx = (await runProfile({
+        environment: loadLayeredEnv('dsh'),
+        profile: 'web',
+        installAnchor: INSTALL_ANCHOR,
+        patchReload: 'frozen',
+        patchFiles: [],
+        args: ['--no-open'],
+      })).ctx
+      const graphOf = (context: Context): {
+        entries: readonly { id: string; inject?: readonly string[]; immediately?: boolean; external?: readonly string[] }[]
+        batches: readonly { phase: string; entries: readonly string[] }[]
+      } => (context.get('clientModules') as { graph(): ReturnType<typeof graphOf> }).graph()
+      const normalize = (graph: ReturnType<typeof graphOf>): unknown => {
+        const phases = new Map(graph.batches.flatMap(
+          batch => batch.entries.map(id => [id, batch.phase] as const),
+        ))
+        return graph.entries
+          .filter(entry => entry.id !== '@deepseek-ai/dsh-client-hmr')
+          .map(({ id, inject, immediately, external }) => ({
+            id,
+            phase: phases.get(id),
+            ...inject === undefined ? {} : { inject },
+            ...immediately === undefined ? {} : { immediately },
+            ...external === undefined ? {} : { external },
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id))
+      }
+      expect(normalize(graphOf(ctx!))).toEqual(normalize(graphOf(webCtx)))
+    } finally {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+      await webCtx?.fiber.dispose()
+      await rm(webHome, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('serves the advertised startup batch through the carrier lane', async () => {
     const runtime = ctx!.get('desktopRuntime') as {
-      bundleBytes(pkg: string): Uint8Array
+      bootPayload(): { injections: readonly { kind: string; name?: string; value?: unknown }[] }
+      fetch(request: Request): Promise<Response>
     } | undefined
     expect(runtime).toBeDefined()
-    const bytes = runtime!.bundleBytes('@deepseek-ai/dsh-client-ui-theme')
-    expect(bytes.length).toBeGreaterThan(0)
+    const boot = runtime!.bootPayload().injections.find(row => row.name === '__DSH_BOOT__')
+    const graph = boot?.value as { batches?: readonly { url?: unknown }[] } | undefined
+    const url = graph?.batches?.[0]?.url
+    expect(typeof url).toBe('string')
+    const response = await runtime!.fetch(new Request(`http://127.0.0.1${url as string}`))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  it('dispatches the Session export download route through the carrier lane', async () => {
+    const runtime = ctx!.get('desktopRuntime') as {
+      fetch(request: Request): Promise<Response>
+    } | undefined
+    expect(runtime).toBeDefined()
+
+    const response = await runtime!.fetch(new Request(
+      'http://127.0.0.1/api/session.export',
+      { method: 'HEAD' },
+    ))
+    expect(response.status).toBe(400)
+    expect(await response.text()).toBe('')
+  })
+
+  it('mounts the standard preset through the Electron module-loader fallback', async () => {
+    const loader = ctx!.get('loader') as { internal: unknown } | undefined
+    const agents = ctx!.get('agents') as {
+      create(options: {
+        sessionId: string
+        meta: { cwd: string }
+        setup(agentCtx: Context): Promise<void>
+      }): Promise<{ dispose(): Promise<void> }>
+    } | undefined
+    const presets = ctx!.get('agentPresets') as {
+      mount(agentCtx: Context, id: string): Promise<unknown>
+    } | undefined
+    expect(loader).toBeDefined()
+    expect(agents).toBeDefined()
+    expect(presets).toBeDefined()
+    const internal = loader!.internal
+    loader!.internal = undefined
+    let handle: { dispose(): Promise<void> } | undefined
+    try {
+      handle = await agents!.create({
+        sessionId: 'desktop-electron-preset-fallback',
+        meta: { cwd: process.cwd() },
+        setup: async (agentCtx) => { await presets!.mount(agentCtx, 'standard') },
+      })
+    } finally {
+      loader!.internal = internal
+    }
+    await handle?.dispose()
   })
 })

@@ -215,7 +215,11 @@ export function gatesForMode(selected: Mode): Gate[] {
     case 'ci-primary':
       return ciPrimaryGates()
     case 'ci-linux-primary':
-      return [...ciPrimaryGates(), webSnapshotGate(['built-package-invariants'])]
+      return [
+        ...ciPrimaryGates(),
+        desktopElectronGate(['built-package-invariants']),
+        webSnapshotGate(['built-package-invariants'], ['desktop-electron']),
+      ]
     case 'ci-static':
       return ciStaticGates({ ownsBuild: false })
     case 'ci-lint-contracts-ready':
@@ -435,6 +439,7 @@ function ciConsumerGates(): Gate[] {
     'doc-typecheck',
     'node-next-types',
     'built-bin-smoke',
+    'desktop-electron',
   ]
   return [
     ciBuildGate(),
@@ -450,6 +455,7 @@ function ciConsumerGates(): Gate[] {
     }),
     snapshotGate(validatedBuild),
     expectedOutputGate(validatedBuild),
+    desktopElectronGate(validatedBuild),
     webSnapshotGate(validatedBuild, buildArtifactReaders),
     pnpmScript('doc-typecheck', 'doc-typecheck:contracts-ready', {
       needs: validatedBuild,
@@ -485,6 +491,19 @@ function webSnapshotGate(needs: string[], after?: string[]): Gate {
     env: { DSH_SNAPSHOT: 'replay' },
     ...order,
   })
+}
+
+/** Run the built Electron application under the Linux virtual display. */
+function desktopElectronGate(needs: string[]): Gate {
+  const invocation = pnpmInvocation(['run', 'test:desktop:built'])
+  return {
+    id: 'desktop-electron',
+    label: 'desktop Electron application',
+    displayCommand: 'xvfb-run -a pnpm run test:desktop:built',
+    command: 'xvfb-run',
+    args: ['-a', invocation.command, ...invocation.args],
+    needs,
+  }
 }
 
 function ciWindowsBlockingGates(): Gate[] {

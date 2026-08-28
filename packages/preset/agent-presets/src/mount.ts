@@ -73,7 +73,9 @@ class PresetTree extends Include {
    * installed harness, and bare names resolve from there. An absolute
    * filesystem path names neither base and becomes a file URL before Node's
    * ESM loader receives it, which is required for drive-letter paths on
-   * Windows.
+   * Windows. When a host such as Electron's Node process exposes no internal
+   * ESM loader, package rows use Node's ESM resolution conditions against the
+   * same host base and file rows import their normalized URL directly.
    *
    * {@link classifyRowSpecifier} makes that split, so discovery's health check
    * resolves every row from the same base this import uses.
@@ -88,9 +90,10 @@ class PresetTree extends Include {
     if (base === undefined) return super.import(row.specifier, getOuterStack)
     if (row.kind === 'builtin' || row.kind === 'preset') return super.import(row.specifier, getOuterStack)
     const internal = this.ctx.loader.internal
-    /* v8 ignore next -- Node always supplies the internal module loader; the branch keeps a
-       hypothetical embedder from losing the row's name in a resolution error. */
-    if (internal === undefined) return super.import(row.specifier, getOuterStack)
+    if (internal === undefined) {
+      if (row.kind === 'file') return import(row.specifier)
+      return import('import-meta-resolve').then(({ resolve }) => import(resolve(row.specifier, base)))
+    }
     return internal.import(row.specifier, base, {})
   }
 

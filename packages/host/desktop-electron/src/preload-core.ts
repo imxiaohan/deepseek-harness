@@ -2,11 +2,17 @@
  * The renderer half of the desktop IPC carrier: the `ClientTransportHooks`
  * face the preload installs as `window.__DSH_TRANSPORT__`, pure over injected
  * Electron primitives so tests drive it without a renderer. `fetch` rides one
- * invoke round trip; `openStream` yields one async iterator per logical
- * stream fed by main-process events; `ownsHost` declares the renderer owns
- * its host outright.
+ * invoke round trip with correlated cancellation; `openStream` yields one
+ * async iterator per logical stream fed by main-process events; `ownsHost`
+ * declares the renderer owns its host outright.
  * @module @deepseek-ai/dsh-host-desktop-electron/preload-core
  */
+
+import {
+  parseDesktopIpcMessage,
+  type DesktopIpcId,
+  type DesktopIpcMessage,
+} from './ipc-protocol.ts'
 
 /**
  * The transport face this package assembles: structurally the connection
@@ -38,12 +44,14 @@ export interface PreloadRpc {
   readonly invoke: PreloadInvoke
   readonly on: PreloadOn
   readonly send: PreloadSend
-  /** Fresh correlation id for one stream. */
-  newId(): string
+  /** Fresh correlation id for one fetch or stream. */
+  newId(): DesktopIpcId
 }
 
 /** IPC channels between the preload and the main process. */
 export const DESKTOP_FETCH_CHANNEL = 'dsh-desktop:fetch'
+/** IPC channel carrying one fetch cancellation to the main process. */
+export const DESKTOP_FETCH_CANCEL_CHANNEL = 'dsh-desktop:fetch-cancel'
 /** IPC channel carrying one logical stream's open request to the main process. */
 export const DESKTOP_OPEN_STREAM_CHANNEL = 'dsh-desktop:open-stream'
 /** IPC channel carrying one logical stream's cancellation to the main process. */
@@ -52,26 +60,18 @@ export const DESKTOP_STREAM_CANCEL_CHANNEL = 'dsh-desktop:stream-cancel'
 export const DESKTOP_STREAM_EVENT_CHANNEL = 'dsh-desktop:stream-event'
 
 /** One stream lifecycle event the main process pushes. */
-export type DesktopStreamEvent =
-  | { readonly kind: 'item'; readonly id: string; readonly value: unknown }
-  | { readonly kind: 'end'; readonly id: string }
-  | { readonly kind: 'error'; readonly id: string; readonly error: unknown }
+export type DesktopStreamEvent = Extract<
+  DesktopIpcMessage,
+  { readonly t: 'stream-item' | 'stream-end' | 'stream-error' }
+>
 
 /** Serialized fetch round trip both directions share. */
 export interface PreloadFetchPayload {
+  readonly id: DesktopIpcId
   readonly url: string
   readonly method: string
   readonly headers: Record<string, string>
   readonly body?: string
-}
-
-/** Serialized fetch response both directions share. */
-export interface PreloadFetchResponse {
-  readonly status: number
-  readonly statusText: string
-  readonly headers: Record<string, string>
-  readonly body: string | null
-  readonly bodyBase64?: string
 }
 
 /**
@@ -87,22 +87,46 @@ export function createDesktopTransport(rpc: PreloadRpc): DesktopTransportHooks {
       if (headerInit !== undefined) {
         if (Array.isArray(headerInit)) {
           for (const [key, value] of headerInit) headers[key] = value
-        } else if (typeof headerInit === 'object') {
-          for (const [key, value] of Object.entries(headerInit)) headers[key] = String(value)
+        } else if (headerInit instanceof Headers) {
+          headerInit.forEach((value, key) => { headers[key] = value })
+        } else {
+          for (const [key, value] of Object.entries(headerInit)) headers[key] = value
         }
       }
+      const id = rpc.newId()
       const payload: PreloadFetchPayload = {
+        id,
         url: input.href,
         method: init.method ?? 'GET',
         headers,
         ...typeof init.body === 'string' ? { body: init.body } : {},
       }
-      const response = await rpc.invoke(DESKTOP_FETCH_CHANNEL, payload) as PreloadFetchResponse
+      const signal = init.signal
+      signal?.throwIfAborted()
+      let rejectAborted: ((reason?: unknown) => void) | undefined
+      const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject })
+      const abort = (): void => {
+        rpc.send(DESKTOP_FETCH_CANCEL_CHANNEL, { id })
+        rejectAborted?.(signal?.reason)
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      let raw: unknown
+      try {
+        raw = signal === undefined
+          ? await rpc.invoke(DESKTOP_FETCH_CHANNEL, payload)
+          : await Promise.race([rpc.invoke(DESKTOP_FETCH_CHANNEL, payload), aborted])
+      } finally {
+        signal?.removeEventListener('abort', abort)
+      }
+      const response = parseDesktopIpcMessage(raw)
+      if (response?.t !== 'fetch-res' || response.id !== id || response.bodyStream === true) {
+        throw new Error('desktop fetch received an invalid response')
+      }
       const body = response.bodyBase64 !== undefined
         // Node/DOM fetch accept Uint8Array bodies; the generic mismatch is a
         // typings artifact of the shared Node+browser source.
         ? (Uint8Array.from(atob(response.bodyBase64), char => char.charCodeAt(0)) as unknown as BodyInit)
-        : response.body ?? ''
+        : response.body
       return new Response(body, {
         status: response.status,
         statusText: response.statusText,
@@ -123,38 +147,60 @@ async function* streamOver(
   payload: unknown,
   signal: AbortSignal,
 ): AsyncGenerator<unknown, void, unknown> {
-  if (signal.aborted) throw new Error('desktop stream opened with an aborted signal')
+  signal.throwIfAborted()
   const id = rpc.newId()
   const queue: DesktopStreamEvent[] = []
   let notify: (() => void) | undefined
-  let settled = false
+  let cancellationSent = false
+  let cancelled = false
+  let resolveCancellation: ((value: 'cancelled') => void) | undefined
+  const cancellation = new Promise<'cancelled'>((resolve) => {
+    resolveCancellation = resolve
+  })
   const deliver = (event: DesktopStreamEvent): void => {
+    if (cancelled) return
     queue.push(event)
     notify?.()
   }
   const dispose = rpc.on(DESKTOP_STREAM_EVENT_CHANNEL, (raw) => {
-    const event = raw as DesktopStreamEvent
+    const event = parseDesktopIpcMessage(raw)
+    if (event?.t !== 'stream-item' && event?.t !== 'stream-end' && event?.t !== 'stream-error') return
     if (event.id === id) deliver(event)
   })
-  const cancel = (): void => { rpc.send(DESKTOP_STREAM_CANCEL_CHANNEL, { id }) }
-  signal.addEventListener('abort', cancel, { once: true })
+  const sendCancel = (): void => {
+    if (cancellationSent) return
+    cancellationSent = true
+    rpc.send(DESKTOP_STREAM_CANCEL_CHANNEL, { id })
+  }
+  const abort = (): void => {
+    cancelled = true
+    queue.splice(0)
+    sendCancel()
+    resolveCancellation?.('cancelled')
+    notify?.()
+  }
+  signal.addEventListener('abort', abort, { once: true })
   try {
-    await rpc.invoke(DESKTOP_OPEN_STREAM_CHANNEL, { id, endpoint, payload })
+    const acknowledgement = await Promise.race([
+      rpc.invoke(DESKTOP_OPEN_STREAM_CHANNEL, { id, endpoint, payload }),
+      cancellation,
+    ])
+    if (acknowledgement === 'cancelled') return
+    if (acknowledgement !== 'ok') throw new Error('desktop stream received an invalid acknowledgement')
     while (true) {
-      while (queue.length === 0 && !settled) {
+      while (queue.length === 0) {
+        if (signal.aborted) return
         await new Promise<void>((resolve) => { notify = resolve })
         notify = undefined
       }
-      const event = queue.shift()
-      if (event === undefined) break
-      if (event.kind === 'item') yield event.value
-      else if (event.kind === 'end') { settled = true; return }
-      else { settled = true; throw new Error(`desktop stream failed: ${JSON.stringify(event.error)}`) }
+      const event = queue.shift() as DesktopStreamEvent
+      if (event.t === 'stream-item') yield event.value
+      else if (event.t === 'stream-end') return
+      else throw new Error(`desktop stream failed: ${JSON.stringify(event.error)}`)
     }
   } finally {
-    settled = true
     dispose()
-    signal.removeEventListener('abort', cancel)
-    if (!signal.aborted) cancel()
+    signal.removeEventListener('abort', abort)
+    sendCancel()
   }
 }

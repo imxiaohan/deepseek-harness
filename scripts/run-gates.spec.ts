@@ -415,7 +415,7 @@ describe('Node 24 lane ownership', () => {
     const subject = withPnpmEntrypoint(() => gatesForMode('ci-consumers'))
 
     expect(defaultConcurrency('ci-consumers', subject.length, 4)).toEqual({
-      workers: 11,
+      workers: 12,
       source: 'ci-consumers gate count',
     })
     expect(subject.map(item => item.id)).toEqual([
@@ -426,6 +426,7 @@ describe('Node 24 lane ownership', () => {
       'lint-and-duplication',
       'snapshot',
       'expected-output',
+      'desktop-electron',
       'web-snapshot',
       'doc-typecheck',
       'node-next-types',
@@ -443,6 +444,7 @@ describe('Node 24 lane ownership', () => {
     for (const id of [
       'snapshot',
       'expected-output',
+      'desktop-electron',
       'web-snapshot',
       'doc-typecheck',
       'node-next-types',
@@ -473,20 +475,28 @@ describe('Node 24 lane ownership', () => {
         'doc-typecheck',
         'node-next-types',
         'built-bin-smoke',
+        'desktop-electron',
       ],
     })
   })
 })
 
 describe('Linux primary graph', () => {
-  it('adds the same compare-only web gate after built client artifacts', () => {
+  it('runs the built Electron lane before the compare-only web gate', () => {
     const subject = withPnpmEntrypoint(() => gatesForMode('ci-linux-primary'))
+    const desktop = subject.find(item => item.id === 'desktop-electron')
     const web = subject.find(item => item.id === 'web-snapshot')
 
+    expect(desktop).toMatchObject({
+      displayCommand: 'xvfb-run -a pnpm run test:desktop:built',
+      command: 'xvfb-run',
+      needs: ['built-package-invariants'],
+    })
     expect(web).toMatchObject({
       displayCommand: 'DSH_SNAPSHOT=replay pnpm run test:web:built',
       env: { DSH_SNAPSHOT: 'replay' },
       needs: ['built-package-invariants'],
+      after: ['desktop-electron'],
     })
   })
 })

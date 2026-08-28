@@ -3,13 +3,12 @@
  * The tree side provides the virtual `webServer` service (route registry and
  * index injections with no listening socket) and the `desktopRuntime` lane
  * the host child serves the IPC carrier from: the connection shared fetch
- * handler, the Gateway wire stream, the boot payload, and plugin-bundle
- * bytes. The Electron-free halves (IPC protocol, host bridge, preload
+ * handler, the virtual server's plugin-asset route, the Gateway wire stream,
+ * and the boot payload. The Electron-free halves (IPC protocol, host bridge, preload
  * transport) live here too; the Electron main assembles them in `apps/desktop`.
  * @module @deepseek-ai/dsh-host-desktop-electron
  */
 
-import { readFileSync } from 'node:fs'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { VirtualWebServer } from './virtual-web-server.ts'
@@ -21,25 +20,26 @@ export {
 } from './host-bridge.ts'
 export type { DesktopHostChannel } from './ipc-protocol.ts'
 export type {
-  DesktopIpcId,
+  DesktopFetchResponseMessage,
   DesktopIpcMessage,
   DesktopHostSend,
 } from './ipc-protocol.ts'
 export {
   CARRIER_LOOPBACK_HOST,
+  DesktopIpcId,
   loopbackCarrierUrl,
   parseDesktopIpcMessage,
 } from './ipc-protocol.ts'
 export {
   createDesktopTransport,
   type DesktopTransportHooks,
+  DESKTOP_FETCH_CANCEL_CHANNEL,
   DESKTOP_FETCH_CHANNEL,
   DESKTOP_OPEN_STREAM_CHANNEL,
   DESKTOP_STREAM_CANCEL_CHANNEL,
   DESKTOP_STREAM_EVENT_CHANNEL,
   type DesktopStreamEvent,
   type PreloadFetchPayload,
-  type PreloadFetchResponse,
   type PreloadInvoke,
   type PreloadOn,
   type PreloadRpc,
@@ -60,14 +60,9 @@ interface ConnectionLane {
 /** The Gateway wire-stream face this package reads. */
 interface WireStreamLane {
   readonly wireStream: {
-    open(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown>
+    open(endpoint: string, payload: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>>
     failure(error: unknown): unknown
   }
-}
-
-/** The module registry face this package reads. */
-interface ClientModulesLane {
-  clientPath(id: string): string | undefined
 }
 
 /**
@@ -85,7 +80,8 @@ export class DesktopRuntime extends Service {
 
   /**
    * The shared `/api` fetch handler, composed once the connection node half
-   * is active. Requests must carry a loopback authority for the fence.
+   * is active. Electron main authorizes the renderer before this transport-
+   * agnostic handler receives a request.
    * @returns the transport-agnostic dispatch face.
    */
   handler(): { fetch(request: Request): Promise<Response> } {
@@ -97,13 +93,30 @@ export class DesktopRuntime extends Service {
   }
 
   /**
+   * Dispatch one carrier request to the registered plugin-asset route or the shared API handler.
+   * @param request - loopback-authority request reconstructed by the host bridge.
+   * @returns the plugin asset or API response.
+   */
+  fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    if (url.pathname === '/plugins' || url.pathname.startsWith('/plugins/')) {
+      const webServer = this.ctx.get('webServer') as VirtualWebServer | undefined
+      if (webServer === undefined) {
+        throw new Error('desktop-electron: the composition exposes no webServer service')
+      }
+      return webServer.fetchAsset(request)
+    }
+    return this.handler().fetch(request)
+  }
+
+  /**
    * Open one logical Gateway Remote stream.
    * @param endpoint - Gateway stream endpoint.
    * @param payload - stream-opening payload.
    * @param signal - cancellation for the logical stream.
    * @returns the stream's decoded items.
    */
-  openStream(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown> {
+  openStream(endpoint: string, payload: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>> {
     const gateway = this.ctx.get('typertGateway') as WireStreamLane | undefined
     if (gateway === undefined) {
       throw new Error('desktop-electron: the composition exposes no typertGateway service')
@@ -136,19 +149,6 @@ export class DesktopRuntime extends Service {
     return { injections: webServer.collectIndexInjections() }
   }
 
-  /**
-   * Bytes of one plugin's client bundle.
-   * @param pkg - the package owning the `dsh.client` declaration.
-   * @returns the bundle bytes.
-   */
-  bundleBytes(pkg: string): Uint8Array {
-    const registry = this.ctx.get('clientModules') as ClientModulesLane | undefined
-    const path = registry?.clientPath(pkg)
-    if (path === undefined) {
-      throw new Error(`desktop-electron: no client bundle for ${JSON.stringify(pkg)}`)
-    }
-    return new Uint8Array(readFileSync(path))
-  }
 }
 
 /**

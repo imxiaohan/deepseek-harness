@@ -116,8 +116,8 @@
 
     # Owns both ends of the transport: node half composes the shared `/api`
     # fetch handler the IPC bridge dispatches through; browser half consumes
-    # the preload transport (`__DSH_TRANSPORT__`). No HTTP surface exists, so
-    # the trust fence sees the bridge's synthesized loopback authority.
+    # the preload transport (`__DSH_TRANSPORT__`). Electron main-frame
+    # admission authorizes the transport; host routes receive loopback URLs.
     - id: connection
       name: '@deepseek-ai/dsh-client-connection'
 

@@ -180,6 +180,9 @@ importers:
       '@deepseek-ai/dsh-cordis-client-runner':
         specifier: workspace:^
         version: link:../../packages/extensions/cordis-client-runner
+      '@deepseek-ai/dsh-desktop':
+        specifier: workspace:^
+        version: link:../desktop
       '@deepseek-ai/dsh-desktop-app':
         specifier: workspace:^
         version: link:../../packages/bundle/desktop-app
@@ -487,6 +490,12 @@ importers:
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../packages/host/webserver
+      '@deepseek-ai/dsh-persona':
+        specifier: workspace:^
+        version: link:../../packages/preset/persona
+      '@deepseek-ai/dsh-tool-ask-user':
+        specifier: workspace:^
+        version: link:../../packages/interaction/tool-ask-user
       '@deepseek-ai/dsh-util-crypto':
         specifier: workspace:^
         version: link:../../packages/util/crypto
@@ -496,6 +505,9 @@ importers:
       '@deepseek-ai/dsh-web-frontend':
         specifier: workspace:^
         version: link:../web
+      electron:
+        specifier: ^39.2.0
+        version: 39.8.10
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -503,12 +515,12 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: workspace:^
         version: link:../../packages/client/connection
-      electron:
-        specifier: ^39.2.0
-        version: 39.8.10
       electron-builder:
         specifier: ^26.0.12
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
+      playwright:
+        specifier: ^1.49.0
+        version: 1.61.1
 
   apps/web:
     devDependencies:
@@ -6064,15 +6076,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
-      '@deepseek-ai/dsh-api-gateway':
+      '@deepseek-ai/dsh-brand':
         specifier: workspace:^
-        version: link:../../api/gateway
+        version: link:../../util/brand
       '@deepseek-ai/dsh-client-connection':
         specifier: workspace:^
         version: link:../../client/connection
-      '@deepseek-ai/dsh-client-modules':
-        specifier: workspace:^
-        version: link:../../client/modules
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../webserver
@@ -6960,6 +6969,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
+      import-meta-resolve:
+        specifier: ^4.2.0
+        version: 4.2.0
       js-yaml:
         specifier: ^4.1.0
         version: 4.2.0
