@@ -1,5 +1,5 @@
 /**
- * Reject product UI copy embedded directly in Client source.
+ * Reject product UI copy embedded directly in Client and native-app source.
  *
  * Locale dictionaries are the only source files allowed to own translated
  * text. Presentation code receives copy through its typed `t` seat or through
@@ -12,7 +12,7 @@ import { resolve } from 'node:path'
 import ts from 'typescript'
 
 const root = resolve(import.meta.dirname, '..')
-const MINIMUM_CLIENT_UI_SOURCES = 450
+const MINIMUM_UI_SOURCES = 450
 
 const COPY_ATTRIBUTES = new Set([
   'alt',
@@ -48,6 +48,8 @@ const IMMUTABLE_LANGUAGE_TOKENS = new Set([
   'undefined',
 ])
 const LOCALE_KEY = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+)+$/
+const NATIVE_COPY_CONSTRUCTORS = new Set(['BrowserWindow', 'Notification'])
+const NATIVE_COPY_METHODS = new Set(['showErrorBox', 'showMessageBox', 'showMessageBoxSync'])
 
 /** One hard-coded product-copy occurrence. */
 export interface UiI18nViolation {
@@ -246,6 +248,28 @@ export function findUiI18nViolations(file: string, sourceText: string): UiI18nVi
     }
 
     if (
+      ts.isNewExpression(node)
+      && ts.isIdentifier(node.expression)
+      && NATIVE_COPY_CONSTRUCTORS.has(node.expression.text)
+    ) {
+      for (const argument of node.arguments ?? []) {
+        collectExpression(argument, `${node.expression.text} option`)
+      }
+    }
+
+    if (
+      ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression)
+      && node.expression.expression.text === 'dialog'
+      && NATIVE_COPY_METHODS.has(node.expression.name.text)
+    ) {
+      for (const argument of node.arguments) {
+        collectExpression(argument, `dialog.${node.expression.name.text} argument`)
+      }
+    }
+
+    if (
       ts.isJsxExpression(node)
       && node.expression !== undefined
       && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))
@@ -299,7 +323,11 @@ export function clientSourceRoot(file: string): string | undefined {
   return index < 0 ? undefined : normalized.slice(0, index + marker.length - 1)
 }
 
-function sourceFiles(): string[] {
+/**
+ * Discover every source tree that owns product UI presentation.
+ * @returns Repository-relative source paths in stable order.
+ */
+export function uiSourceFiles(): string[] {
   const clientComponentRoots = new Set(
     globSync('packages/*/*/src/client/**/*.tsx', { cwd: root })
       .map(clientSourceRoot)
@@ -311,6 +339,7 @@ function sourceFiles(): string[] {
     ...[...clientComponentRoots].flatMap(clientRoot =>
       globSync(`${clientRoot}/**/*.{ts,tsx}`, { cwd: root })),
     ...globSync('apps/web/src/**/*.{ts,tsx}', { cwd: root }),
+    ...globSync('apps/desktop/src/**/*.{ts,tsx}', { cwd: root }),
   ])]
     .map(file => file.replaceAll('\\', '/'))
     .filter(file => !file.endsWith('.d.ts'))
@@ -318,10 +347,10 @@ function sourceFiles(): string[] {
 }
 
 function main(): void {
-  const files = sourceFiles()
-  if (files.length < MINIMUM_CLIENT_UI_SOURCES) {
+  const files = uiSourceFiles()
+  if (files.length < MINIMUM_UI_SOURCES) {
     throw new Error(
-      `verify-client-ui-i18n: discovery narrowed to ${files.length} source file(s); expected at least ${MINIMUM_CLIENT_UI_SOURCES}.`,
+      `verify-client-ui-i18n: discovery narrowed to ${files.length} source file(s); expected at least ${MINIMUM_UI_SOURCES}.`,
     )
   }
   const violations = files.flatMap(file =>
@@ -336,7 +365,7 @@ function main(): void {
     process.exitCode = 1
     return
   }
-  console.log(`verify-client-ui-i18n: ${files.length} Client UI source file(s) use locale-owned copy.`)
+  console.log(`verify-client-ui-i18n: ${files.length} UI source file(s) use locale-owned copy.`)
 }
 
 if (import.meta.filename === resolve(process.argv[1] ?? '')) main()

@@ -118,7 +118,11 @@ function startFetch(
   let finishBody: (() => void) | undefined
   const bodyDone = new Promise<void>((resolve) => { finishBody = resolve })
   const finish = (): void => { finishBody?.() }
-  signal.addEventListener('abort', finish, { once: true })
+  const cancelBody = (): void => {
+    finish()
+    if (reader !== undefined) void reader.cancel(signal.reason).catch(() => {})
+  }
+  signal.addEventListener('abort', cancelBody, { once: true })
 
   const done = (async (): Promise<void> => {
     try {
@@ -137,17 +141,24 @@ function startFetch(
           statusText: 'desktop host fetch failed',
         })
       }
+      if (signal.aborted) {
+        if (response.body !== null) await Promise.allSettled([response.body.cancel(signal.reason)])
+        return
+      }
       signal.throwIfAborted()
       if (message.streamBody !== true) {
-        send(channel, await serializeResponse(
-          message.id,
-          response,
-          message.method.toUpperCase() === 'HEAD' || response.body === null,
-        ))
+        if (message.method.toUpperCase() === 'HEAD' || response.body === null) {
+          send(channel, serializeResponseHead(message.id, response, false))
+          return
+        }
+        reader = response.body.getReader()
+        const body = await readResponseBody(reader, signal)
+        signal.throwIfAborted()
+        send(channel, serializeResponseBody(message.id, response, body))
         return
       }
       if (message.method.toUpperCase() === 'HEAD' || response.body === null) {
-        send(channel, await serializeResponse(message.id, response, true))
+        send(channel, serializeResponseHead(message.id, response, false))
         return
       }
       reader = response.body.getReader()
@@ -165,7 +176,7 @@ function startFetch(
         })
       }
     } finally {
-      signal.removeEventListener('abort', finish)
+      signal.removeEventListener('abort', cancelBody)
       if (reader !== undefined) await Promise.allSettled([reader.cancel(signal.reason)])
     }
   })()
@@ -230,16 +241,37 @@ async function pumpStream(
   }
 }
 
-/** Serialize one complete unary fetch `Response` onto the protocol. */
-async function serializeResponse(
+/** Read a complete unary response while retaining a cancellable body reader. */
+async function readResponseBody(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = []
+  let size = 0
+  while (true) {
+    const next = await reader.read()
+    signal.throwIfAborted()
+    if (next.done) break
+    chunks.push(next.value)
+    size += next.value.byteLength
+  }
+  const body = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body
+}
+
+/** Serialize one complete unary fetch body onto the protocol. */
+function serializeResponseBody(
   id: DesktopIpcId,
   response: Response,
-  omitBody: boolean,
-): Promise<DesktopIpcMessage> {
-  if (omitBody) return serializeResponseHead(id, response, false)
+  buffer: Uint8Array,
+): DesktopIpcMessage {
   const headers: Record<string, string> = {}
   response.headers.forEach((value, key) => { headers[key] = value })
-  const buffer = new Uint8Array(await response.arrayBuffer())
   const asText = decodeUtf8(buffer)
   return asText === undefined
     ? {

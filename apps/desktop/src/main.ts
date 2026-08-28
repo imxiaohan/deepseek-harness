@@ -16,6 +16,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { dirname, join, normalize, sep } from 'node:path'
+import { inspect } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import {
   app,
@@ -42,6 +43,7 @@ import {
   type DesktopFetchResponseMessage,
   type DesktopIpcMessage,
 } from '@deepseek-ai/dsh-host-desktop-electron'
+import { desktopNativeCopy, type DesktopFatalStage } from './locale.ts'
 
 /** The privileged scheme the application index and plugin bundles serve over. */
 const APP_SCHEME = 'dsh-desktop'
@@ -119,13 +121,21 @@ let rendererAuthority: { protocol: string; host: string } | undefined
 /** Whether the current main-frame navigation has committed a trusted document. */
 let rendererDocumentReady = false
 
+/** Resolve the copy for Electron-native presentation. */
+function nativeCopy(): ReturnType<typeof desktopNativeCopy> {
+  return desktopNativeCopy(app.isReady() ? app.getLocale() : 'en')
+}
+
 /** Report a fatal shell condition through every surface a packaged app has. */
-function reportFatal(stage: string, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error)
-  const text = `dsh desktop: ${stage}: ${message}`
+function reportFatal(stage: DesktopFatalStage, error?: unknown): void {
+  const copy = nativeCopy()
+  const detail = error === undefined ? undefined : error instanceof Error ? error.message : inspect(error)
+  const text = detail === undefined
+    ? `${copy.fatalPrefix}: ${copy.fatalStages[stage]}`
+    : `${copy.fatalPrefix}: ${copy.fatalStages[stage]}: ${detail}`
   console.error(text)
-  if (Notification.isSupported()) new Notification({ title: 'DeepSeek Harness', body: text }).show()
-  dialog.showErrorBox('DeepSeek Harness', text)
+  if (Notification.isSupported()) new Notification({ title: copy.applicationTitle, body: text }).show()
+  dialog.showErrorBox(copy.applicationTitle, text)
 }
 
 /** Tear down the host before exiting from a fatal renderer condition. */
@@ -170,7 +180,8 @@ function trustedSchemeUrl(href: string): boolean {
 /** Admit host routes only when Chromium attributes them to the current main frame. */
 function trustedSchemeInitiator(details: Electron.OnBeforeRequestListenerDetails): boolean {
   const window = mainWindow
-  return rendererDocumentReady
+  return !quitting
+    && rendererDocumentReady
     && window !== undefined
     && !window.isDestroyed()
     && details.webContents === window.webContents
@@ -180,7 +191,8 @@ function trustedSchemeInitiator(details: Electron.OnBeforeRequestListenerDetails
 
 /** The main process's entrance check for the current trusted main-frame document. */
 function carrierSenderOk(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
-  return rendererDocumentReady
+  return !quitting
+    && rendererDocumentReady
     && event.sender === mainWindow?.webContents
     && event.senderFrame !== null
     && event.senderFrame === event.sender.mainFrame
@@ -199,9 +211,9 @@ function rendererMessage(
 }
 
 /** Report compromised or malformed renderer traffic and start ordered teardown. */
-function invalidRendererMessage(operation: string): void {
+function invalidRendererMessage(stage: DesktopFatalStage): void {
   if (quitting) return
-  reportFatal(`renderer sent an invalid ${operation} message`, new Error('IPC field validation failed'))
+  reportFatal(stage)
   quitAfterFatal()
 }
 
@@ -287,7 +299,7 @@ function handleHostMessage(message: DesktopIpcMessage): void {
         window.webContents.send(DESKTOP_STREAM_EVENT_CHANNEL, message)
       } catch (error) {
         if (quitting) return
-        reportFatal('renderer stream relay failed', error)
+        reportFatal('fatal.renderer.streamRelay', error)
         quitAfterFatal()
       }
       return
@@ -301,6 +313,7 @@ function handleHostMessage(message: DesktopIpcMessage): void {
 
 /** Create the window over the privileged scheme (or a host-announced URL in Web-profile mode). */
 function createWindow(url?: string): void {
+  if (quitting) return
   const target = url ?? `${APP_SCHEME}://app/index.html`
   const targetUrl = new URL(target)
   const usesCarrier = targetUrl.protocol === `${APP_SCHEME}:`
@@ -309,7 +322,7 @@ function createWindow(url?: string): void {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
-    title: 'DeepSeek Harness',
+    title: nativeCopy().applicationTitle,
     webPreferences: usesCarrier ? {
       preload: PRELOAD_ENTRY,
       // The preload installs the carrier as a page global the connection
@@ -337,10 +350,12 @@ function createWindow(url?: string): void {
     }
   })
   window.webContents.on('did-frame-navigate', (_event, url, _status, _text, isMainFrame) => {
-    if (isMainFrame) rendererDocumentReady = trustedRendererUrl(url)
+    if (isMainFrame) rendererDocumentReady = !quitting && trustedRendererUrl(url)
   })
   window.webContents.on('did-fail-provisional-load', (_event, _code, _description, _url, isMainFrame) => {
-    if (isMainFrame) rendererDocumentReady = trustedRendererUrl(window.webContents.mainFrame.url)
+    if (isMainFrame) {
+      rendererDocumentReady = !quitting && trustedRendererUrl(window.webContents.mainFrame.url)
+    }
   })
   window.webContents.on('will-attach-webview', (event) => { event.preventDefault() })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -351,12 +366,15 @@ function createWindow(url?: string): void {
   window.webContents.on('render-process-gone', (_event, details) => {
     if (quitting) return
     cancelRendererOperations(new Error('desktop renderer process exited'))
-    reportFatal('renderer process exited', new Error(`${details.reason}; exit code ${String(details.exitCode)}`))
+    reportFatal(
+      'fatal.renderer.processExited',
+      nativeCopy().rendererExitDetail(details.reason, details.exitCode),
+    )
     quitAfterFatal()
   })
   void window.loadURL(target).catch((error: unknown) => {
     if (quitting || window.isDestroyed()) return
-    reportFatal('renderer failed to load', error)
+    reportFatal('fatal.renderer.loadFailed', error)
     quitAfterFatal()
   })
 }
@@ -383,7 +401,7 @@ function bootShell(): void {
     const message = parseDesktopIpcMessage(value)
     if (message === undefined) {
       if (quitting) return
-      reportFatal('host process sent an invalid carrier message', new Error('IPC field validation failed'))
+      reportFatal('fatal.host.invalidCarrierMessage')
       quitAfterFatal()
       return
     }
@@ -400,13 +418,13 @@ function bootShell(): void {
       else app.exit(fatalExitCode)
       return
     }
-    reportFatal('host process exited', new Error(`exit code ${String(code ?? 'null')}; see the console output above`))
+    reportFatal('fatal.host.processExited', nativeCopy().hostExitDetail(code))
     app.exit(1)
   })
   host.on('error', (error) => {
     rejectFetches(error)
     rendererStreams.clear()
-    reportFatal('host process failed to start', error)
+    reportFatal('fatal.host.startFailed', error)
     app.exit(1)
   })
   void bootSettled.then(() => {
@@ -424,16 +442,20 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { mainWindow?.focus() })
 
   app.on('activate', () => {
-    if (mainWindow === undefined && indexHtml !== undefined) createWindow()
+    if (!quitting && mainWindow === undefined && indexHtml !== undefined) createWindow()
   })
 
   app.on('window-all-closed', () => { app.quit() })
 
   app.on('before-quit', (event) => {
+    if (!quitting) {
+      quitting = true
+      rendererDocumentReady = false
+      cancelRendererOperations(new Error('desktop shell is shutting down'))
+    }
     if (host === undefined) return
     event.preventDefault()
-    if (quitting) return
-    quitting = true
+    if (hostShutdownTimer !== undefined) return
     requestHostShutdown(fatalExitCode === undefined ? 0 : 1)
   })
 
@@ -448,7 +470,7 @@ if (!app.requestSingleInstanceLock()) {
       if (!carrierSenderOk(event)) throw new Error('dsh desktop: carrier rejected a foreign sender')
       const message = rendererMessage('fetch', payload)
       if (message?.t !== 'fetch') {
-        invalidRendererMessage('fetch')
+        invalidRendererMessage('fatal.renderer.invalidFetch')
         throw new Error('dsh desktop: invalid renderer fetch message')
       }
       return carrierFetch(message)
@@ -457,7 +479,7 @@ if (!app.requestSingleInstanceLock()) {
       if (!carrierSenderOk(event)) return
       const message = rendererMessage('fetch-cancel', payload)
       if (message?.t !== 'fetch-cancel') {
-        invalidRendererMessage('fetch cancellation')
+        invalidRendererMessage('fatal.renderer.invalidFetchCancellation')
         return
       }
       if (fetches.get(message.id)?.rendererOwned === true) {
@@ -468,11 +490,11 @@ if (!app.requestSingleInstanceLock()) {
       if (!carrierSenderOk(event)) throw new Error('dsh desktop: carrier rejected a foreign sender')
       const message = rendererMessage('open-stream', payload)
       if (message?.t !== 'open-stream') {
-        invalidRendererMessage('stream open')
+        invalidRendererMessage('fatal.renderer.invalidStreamOpen')
         throw new Error('dsh desktop: invalid renderer stream-open message')
       }
       if (rendererStreams.has(message.id)) {
-        invalidRendererMessage('stream open')
+        invalidRendererMessage('fatal.renderer.invalidStreamOpen')
         throw new Error('dsh desktop: renderer reused a stream correlation id')
       }
       rendererStreams.add(message.id)
@@ -488,7 +510,7 @@ if (!app.requestSingleInstanceLock()) {
       if (!carrierSenderOk(event)) return
       const message = rendererMessage('stream-cancel', payload)
       if (message?.t !== 'stream-cancel') {
-        invalidRendererMessage('stream cancellation')
+        invalidRendererMessage('fatal.renderer.invalidStreamCancellation')
         return
       }
       if (!rendererStreams.delete(message.id)) return
@@ -738,9 +760,9 @@ function requestHostShutdown(code: 0 | 1): void {
   const child = host
   if (child === undefined) return
   hostShutdownTimer = setTimeout(() => {
-    if (host === child) child.kill()
+    if (host === child) child.kill('SIGKILL')
   }, HOST_SHUTDOWN_TIMEOUT_MS)
   void sendHostMessage({ t: 'shutdown', code }).catch(() => {
-    if (host === child) child.kill()
+    if (host === child) child.kill('SIGKILL')
   })
 }

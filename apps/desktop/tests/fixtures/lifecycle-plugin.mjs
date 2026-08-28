@@ -54,6 +54,8 @@ export function apply(ctx) {
       record('dispose-start')
       runtime.fetch = originalFetch
       runtime.openStream = originalOpenStream
+      const blockMs = Number.parseInt(process.env.DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS ?? '0', 10)
+      if (blockMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, blockMs)
       record('dispose-end')
     }
   })

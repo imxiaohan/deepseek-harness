@@ -507,6 +507,7 @@ describe('the in-memory carrier', () => {
       fetch: async (request) => {
         if (request.url.endsWith('/error')) throw new Error('fetch exploded')
         if (request.url.endsWith('/string-error')) throw 'string failure'
+        if (request.method === 'HEAD') return new Response('not sent')
         if (request.url.endsWith('/replacement')) {
           return new Response(new Uint8Array([0xef, 0xbf, 0xbd]))
         }
@@ -527,11 +528,12 @@ describe('the in-memory carrier', () => {
       body: 'request body',
     })
     receive?.({ t: 'fetch', id: DesktopIpcId('replacement'), url: 'http://127.0.0.1/replacement', method: 'GET', headers: {} })
+    receive?.({ t: 'fetch', id: DesktopIpcId('head'), url: 'http://127.0.0.1/head', method: 'HEAD', headers: {} })
     receive?.({ t: 'fetch', id: DesktopIpcId('error'), url: 'http://127.0.0.1/error', method: 'GET', headers: {} })
     receive?.({ t: 'fetch', id: DesktopIpcId('string-error'), url: 'http://127.0.0.1/string-error', method: 'GET', headers: {} })
     receive?.({ t: 'stream-end', id: DesktopIpcId('echo') })
     await vi.waitFor(() => {
-      expect(outbound.filter(message => message.t === 'fetch-res')).toHaveLength(4)
+      expect(outbound.filter(message => message.t === 'fetch-res')).toHaveLength(5)
     })
 
     expect(outbound).toContainEqual({
@@ -544,6 +546,9 @@ describe('the in-memory carrier', () => {
     })
     expect(outbound).toContainEqual(expect.objectContaining({
       t: 'fetch-res', id: 'replacement', body: null, bodyBase64: '77+9',
+    }))
+    expect(outbound).toContainEqual(expect.objectContaining({
+      t: 'fetch-res', id: 'head', body: null,
     }))
     expect(outbound).toContainEqual(expect.objectContaining({
       t: 'fetch-res', id: 'error', status: 500, body: 'fetch exploded',
@@ -672,7 +677,8 @@ describe('the in-memory carrier', () => {
   it('contains response serialization and closed-channel failures', async () => {
     const outbound: DesktopIpcMessage[] = []
     let receive: ((message: DesktopIpcMessage) => void) | undefined
-    let abortSerializationStarted = false
+    let bodyReadStarted = false
+    let bodyCancelled = false
     let calls = 0
     const dispose = serveDesktopHost({
       send: (message) => {
@@ -686,19 +692,20 @@ describe('the in-memory carrier', () => {
       },
     }, {
       fetch: async (request) => {
-        const response = new Response('unused')
-        Object.defineProperty(response, 'arrayBuffer', {
-          value: async () => {
-            if (request.url.endsWith('/abort')) {
-              abortSerializationStarted = true
-              return new Promise((_resolve, reject) => {
-                request.signal.addEventListener('abort', () => { reject(new Error('aborted read')) }, { once: true })
-              })
-            }
-            throw request.url.endsWith('/error') ? new Error('read failed') : 'read string failure'
+        if (request.url.endsWith('/abort')) {
+          return new Response(new ReadableStream({
+            start() { bodyReadStarted = true },
+            cancel() {
+              bodyCancelled = true
+              return Promise.reject(new Error('cancel cleanup failed'))
+            },
+          }))
+        }
+        return new Response(new ReadableStream({
+          pull(controller) {
+            controller.error(request.url.endsWith('/error') ? new Error('read failed') : 'read string failure')
           },
-        })
-        return response
+        }))
       },
       openStream: async () => (async function* () {})(),
       failure: error => error,
@@ -713,9 +720,40 @@ describe('the in-memory carrier', () => {
       }))
     })
     receive?.({ t: 'fetch', id: DesktopIpcId('aborted-read'), url: 'http://127.0.0.1/abort', method: 'GET', headers: {} })
-    await vi.waitFor(() => { expect(abortSerializationStarted).toBe(true) })
-    receive?.({ t: 'fetch-cancel', id: DesktopIpcId('aborted-read') })
+    await vi.waitFor(() => { expect(bodyReadStarted).toBe(true) })
     await dispose()
+    expect(bodyCancelled).toBe(true)
+    expect(receive).toBeUndefined()
+  })
+
+  it('cancels response bodies that arrive after bridge disposal', async () => {
+    let receive: ((message: DesktopIpcMessage) => void) | undefined
+    const resolveResponses: Array<(response: Response) => void> = []
+    let bodyCancelled = false
+    const dispose = serveDesktopHost({
+      send: () => {},
+      onMessage: (listener) => {
+        receive = listener
+        return () => { receive = undefined }
+      },
+    }, {
+      fetch: () => new Promise<Response>((resolve) => { resolveResponses.push(resolve) }),
+      openStream: async () => (async function* () {})(),
+      failure: error => error,
+      bootPayload: () => ({ injections: [] }),
+    })
+
+    receive?.({ t: 'fetch', id: DesktopIpcId('late-body'), url: 'http://127.0.0.1/late-body', method: 'GET', headers: {} })
+    receive?.({ t: 'fetch', id: DesktopIpcId('late-empty'), url: 'http://127.0.0.1/late-empty', method: 'GET', headers: {} })
+    await vi.waitFor(() => { expect(resolveResponses).toHaveLength(2) })
+    const disposal = dispose()
+    resolveResponses[0]?.(new Response(new ReadableStream({
+      cancel() { bodyCancelled = true },
+    })))
+    resolveResponses[1]?.(new Response(null, { status: 204 }))
+
+    await disposal
+    expect(bodyCancelled).toBe(true)
     expect(receive).toBeUndefined()
   })
 

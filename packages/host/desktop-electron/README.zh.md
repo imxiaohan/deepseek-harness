@@ -42,7 +42,7 @@ kind: "package-reference"
 | [`src/preload-core.ts`](src/preload-core.ts) | 基于注入的 invoke/on/send 原语的渲染侧传输 |
 | [`src/invariant.ts`](src/invariant.ts) | 不变式伴生插件（无运行时不变式；REAL-composition boot 覆盖载体） |
 
-宿主桥安装消息 listener 后发布一次 boot 载荷；主进程收到该载荷之前不会创建加载自定义协议的窗口。两个进程适配器都会校验每条载体消息，并在字段无效时终止所在进程，而不是让 boot、fetch 或 stream 工作持续等待。fetch 与 stream 取消会穿过两段 IPC，桥销毁会中止并等待所有活动操作，再让 profile 销毁完成。插件 combo URL 通过 fetch 协议保留完整 pathname 与 query string，并交给虚拟服务器注册的 `/plugins` handler；自定义协议上的 `/api` 请求（包括 Session 导出下载）在 Electron 主进程授权文档后使用共享 API Fetch handler。自定义协议响应体在主进程每次 pull 时推进一个二进制分块，因此进程通道及其两端都不会实体化完整 Session 归档。虚拟 `webServer` 的 `host` getter 返回宿主侧 URL 使用的回环权威，使依赖 bind 的消费者选择其回环分支；`port` 抛错，因为桌面组合不监听任何端口。
+宿主桥安装消息 listener 后发布一次 boot 载荷；主进程收到该载荷之前不会创建加载自定义协议的窗口。两个进程适配器都会校验每条载体消息，并在字段无效时终止所在进程，而不是让 boot、fetch 或 stream 工作持续等待。fetch 与 stream 取消会穿过两段 IPC；宿主桥拥有每个响应体 reader，桥销毁会取消这些 reader 并等待所有活动操作，再让 profile 销毁完成。插件 combo URL 通过 fetch 协议保留完整 pathname 与 query string，并交给虚拟服务器注册的 `/plugins` handler；自定义协议上的 `/api` 请求（包括 Session 导出下载）在 Electron 主进程授权文档后使用共享 API Fetch handler。自定义协议响应体在主进程每次 pull 时推进一个二进制分块，因此进程通道及其两端都不会实体化完整 Session 归档。虚拟 `webServer` 的 `host` getter 返回宿主侧 URL 使用的回环权威，使依赖 bind 的消费者选择其回环分支；`port` 抛错，因为桌面组合不监听任何端口。
 
 <a id="model-experience"></a>
 

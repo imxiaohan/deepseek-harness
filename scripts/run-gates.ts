@@ -493,8 +493,14 @@ function webSnapshotGate(needs: string[], after?: string[]): Gate {
   })
 }
 
-/** Run the built Electron application under the Linux virtual display. */
-function desktopElectronGate(needs: string[]): Gate {
+/** Run the built Electron application through the platform's native display carrier. */
+function desktopElectronGate(needs: string[], display: 'linux-xvfb' | 'native' = 'linux-xvfb'): Gate {
+  if (display === 'native') {
+    return pnpmScript('desktop-electron', 'test:desktop:built', {
+      label: 'desktop Electron application',
+      needs,
+    })
+  }
   const invocation = pnpmInvocation(['run', 'test:desktop:built'])
   return {
     id: 'desktop-electron',
@@ -535,6 +541,7 @@ function ciWindowsCompleteGates(): Gate[] {
     ciBuildGate(),
     pnpmScript('windows-site', 'docs:build', { label: 'production site' }),
     ...coverage,
+    desktopElectronGate(['build'], 'native'),
     ...observational,
   ]
 }

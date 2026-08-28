@@ -38,15 +38,15 @@ preload 声明 `ownsHost: true`，使共享客户端可以暴露仅回环产品�
 
 profile 树运行在宿主子进程中，同一 Electron 二进制以 `ELECTRON_RUN_AS_NODE=1` 运行。Electron 二进制在两种模式下都不暴露 Node 内部 ESM loader，因此 vendored Loader 使用按配置树解析的 import 回退。子进程让 profile 销毁独立于主进程与 renderer 故障；把树放入 Electron 主进程既没有 loader 优势，也会耦合两者生命周期。
 
-正常窗口关闭、`SIGINT` 与 `SIGTERM` 都调用 `app.quit()`。关机过程停止准入工作、关闭 listener、发送平台无关的宿主关机消息、中止并等待活动桥操作，并在子进程退出前销毁 profile 树。有界宽限期只会强制终止无法达到静止的子进程。致命 renderer 或 IPC 故障走同一排空路径，并保留非零应用退出状态。
+正常窗口关闭、`SIGINT` 与 `SIGTERM` 都调用 `app.quit()`。关机过程先撤销 renderer 准入并取消文档拥有的工作，再关闭 listener、发送平台无关的宿主关机消息、中止并等待活动桥操作，并在子进程退出前销毁 profile 树。无条件进程终止只会结束未在有界宽限期内达到静止的子进程。致命 renderer 或 IPC 故障走同一排空路径并保留非零应用退出状态；其通知与错误对话框文案来自按操作系统 locale 选择的原生字典。
 
 桌面用户 patch 热重载被冻结，因为 vendored config-HMR 服务要求 Electron 二进制不暴露的 Node 内部模块。宿主与客户端仍是一个发布单元；不支持只更新 renderer。
 
 ### 验证
 
-单元测试钉住 IPC 字段校验、请求与响应序列化、有界响应流、取消、runtime 分发与虚拟注册表生命周期。REAL-composition 测试启动 desktop profile，验证保留行处于 ACTIVE，比较与 Web 共享的浏览器 roster 行及调度阶段（排除传输自有 HMR），并读取同一个共享 boot graph。
+单元测试钉住 IPC 字段校验、请求与响应序列化、响应体 reader 取消、有界响应流、runtime 分发、原生 locale 文案与虚拟注册表生命周期。REAL-composition 测试启动 desktop profile，验证保留行处于 ACTIVE，比较与 Web 共享的浏览器 roster 行及调度阶段（排除传输自有 HMR），并读取同一个共享 boot graph。
 
-已构建应用的 Playwright 测试禁止宿主子进程监听套接字，拒绝外部权威、frame、window、redirect 与非法 IPC，并验证 reload 取消、单实例拒绝、renderer 故障、正常退出、信号、桥销毁与宿主子进程最终退出。Linux 的 PR 和 master CI 在 Xvfb 下运行该套件；本地 macOS 直接运行。一个 keyless 记录会话场景经 `dsh --profile desktop` replay。
+已构建应用的 Playwright 测试禁止宿主子进程监听套接字，拒绝外部权威、frame、window、redirect 与非法 IPC，并验证 reload 和关机准入取消、单实例拒绝、renderer 故障、正常退出、信号、桥销毁、阻塞 disposer 的强制终止与宿主子进程最终退出。Linux 的 PR 和 master CI 在 Xvfb 下运行该套件；Windows 与 macOS 的 PR CI 原生运行。一个 keyless 记录会话场景经 `dsh --profile desktop` replay。
 
 ## 考虑过的替代方案
 

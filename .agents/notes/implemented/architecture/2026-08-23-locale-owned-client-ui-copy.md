@@ -10,19 +10,19 @@ Typed locale namespaces and bilingual dictionary parity proved that registered d
 
 ## Decision
 
-**Locale dictionaries own all product-authored client UI wording.** Visible text, accessibility names, tooltips, placeholders, empty states, status labels, units, and formatting templates reach presentation through a typed `t` seat or an already-localized prop. A value authored by a user, model, provider, plugin, wire peer, or operating system remains data and renders verbatim; protocol tags, tool names, paths, URLs, JSON/JavaScript literals, and stable internal ids are not translated.
+**Locale dictionaries own all product-authored UI wording.** Client-visible text, accessibility names, tooltips, placeholders, empty states, status labels, units, and formatting templates reach presentation through a typed `t` seat or an already-localized prop. Electron-native window, notification, and dialog copy resolves from a typed dictionary selected by the application locale. A value authored by a user, model, provider, plugin, wire peer, or operating system remains data and renders verbatim; protocol tags, tool names, paths, URLs, JSON/JavaScript literals, and stable internal ids are not translated.
 
 **Cordis-free primitives require complete localized copy props and own no language fallback.** `MarkdownText`, `JsonTree`, `TerminalBlock`, `DiffBlock`, `ReadBlock`, `SearchBlock`, `WebBlock`, `CodeBlock`, `JsonBlock`, `HoverCard`, and `ConnectionBanner` receive their chrome from the feature render site. This preserves the primitive package's runtime independence while making omission a type error instead of silently selecting Chinese or English. Shared words live in the `common` namespace; feature-specific phrases stay with the feature that decides their meaning.
 
 **Localized display text is never an identity.** Models and stores retain discriminants, stable ids, and non-display markers. Renderers translate after matching, and request maps carry stable group membership into the trajectory ledger. A client-synthesized error that must survive in a view model uses a stable marker and is translated only when displayed. Language switching therefore changes wording without changing selection, grouping, search identity, or lifecycle state.
 
-**`verify-client-ui-i18n` enforces source ownership.** The TypeScript-AST check discovers every package `src/client` tree that contains TSX, all helper TS files under `packages/client/ui-*`, and the web app source. It rejects natural-language JSX text, copy-bearing attributes and component props, literal JSX branches, label/copy data, named copy helpers, string-returning display formatters, and destructuring defaults. Locale dictionary owners and immutable language tokens are the narrow syntactic exclusions. Discovery refuses a narrowed corpus, unit fixtures pin admitted and excluded forms, and the check runs in the static CI and `hygiene` graphs. Dictionary-key parity remains a separate check: one gate proves copy enters the locale path, while the other proves both shipped languages implement that path.
+**`verify-client-ui-i18n` enforces source ownership.** The TypeScript-AST check discovers every package `src/client` tree that contains TSX, all helper TS files under `packages/client/ui-*`, and the Web and Desktop app sources. It rejects natural-language JSX text, copy-bearing attributes and component props, literal JSX branches, label/copy data, named copy helpers, string-returning display formatters, destructuring defaults, and literal `BrowserWindow`, `Notification`, or `dialog` copy. Locale dictionary owners and immutable language tokens are the narrow syntactic exclusions. Discovery refuses a narrowed corpus, unit fixtures pin admitted and excluded forms, and the check runs in the static CI and `hygiene` graphs. Dictionary-key parity remains a separate check: one gate proves copy enters the locale path, while the other proves both shipped languages implement that path.
 
 The product-authored error and design-literal exclusions, primitive defaults, and trajectory deferral in the [initial rollout](2026-07-30-client-locale-full-rollout.md) are superseded by this decision. Its label-thunk, typed-seat, browser-locale, date-formatting, and search-placeholder decisions remain active.
 
 ## Verification
 
-The AST check's own Vitest spec pins direct JSX, template branches, semantic copy props, label data, formatter returns, locale-key calls, structural attributes, and dictionary owners. Locale dictionary parity pins identical `zh`/`en` keys. Client component suites exercise both direct translated seats and locale-prop adapters, and the assembled web replay plus the required real-server GIF demonstrate the shipped locale switch on the actual trajectory surface.
+The AST check's own Vitest spec pins direct JSX, template branches, semantic copy props, label data, formatter returns, locale-key calls, structural attributes, dictionary owners, and Electron-native presentation calls. Locale dictionary parity pins identical `zh`/`en` keys; the Desktop native-copy unit suite pins both locale selections. Client component suites exercise both direct translated seats and locale-prop adapters, and the assembled web replay plus the required real-server GIF demonstrate the shipped locale switch on the actual trajectory surface.
 
 ## Alternatives considered
 
@@ -36,7 +36,7 @@ The AST check's own Vitest spec pins direct JSX, template branches, semantic cop
 
 ## Consequences
 
-- Adding or changing client UI copy requires a typed dictionary key in both locales and behavior evidence for the affected render path.
+- Adding or changing product UI copy requires a typed dictionary key in both locales and behavior evidence for the affected presentation path.
 - Pure primitives have larger explicit prop types, and tests provide deliberate label fixtures; this cost prevents hidden locale behavior.
 - The AST check catches authored literal bypasses but cannot prove that an arbitrary dynamic string prop was translated. Types, dictionary parity, component tests, and review still own that semantic distinction.
 - Boot markup that renders before the locale service and externally authored runtime data remain outside the dictionary path; product UI replaces boot copy after locale activation.

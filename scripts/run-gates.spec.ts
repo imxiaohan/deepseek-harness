@@ -179,6 +179,11 @@ describe('gate graph validation', () => {
     expect(byId.get('coverage-exempt-heavy')?.allowFailure).not.toBe(true)
     expect(byId.get('coverage')?.needs).toContain('build')
     expect(byId.get('coverage-exempt-heavy')?.needs).toContain('build')
+    expect(byId.get('desktop-electron')?.allowFailure).not.toBe(true)
+    expect(byId.get('desktop-electron')).toMatchObject({
+      displayCommand: 'pnpm run test:desktop:built',
+      needs: ['build'],
+    })
     expect(byId.get('coverage-exempt-heavy')?.args).toContain(
       'packages/experimental/webworker-packer/tests/image-loadable.spec.ts',
     )

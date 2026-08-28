@@ -38,15 +38,15 @@ The host child receives loopback URLs because custom-scheme origins have no host
 
 The profile tree runs in a host child using the Electron binary under `ELECTRON_RUN_AS_NODE=1`. The Electron binary exposes no Node internal ESM loader in either mode, so the vendored Loader uses its config-tree import fallback. The child keeps profile disposal independent from main and renderer failure; putting the tree in Electron main would gain no loader advantage and would couple both lifecycles.
 
-Normal window closure, `SIGINT`, and `SIGTERM` call `app.quit()`. Shutdown stops admitting work, closes listeners, sends the platform-independent host shutdown message, aborts and awaits active bridge operations, and disposes the profile tree before the child exits. A bounded grace period force-terminates only a child that does not reach quiescence. Fatal renderer or IPC failures follow the same drain path and preserve a nonzero application exit.
+Normal window closure, `SIGINT`, and `SIGTERM` call `app.quit()`. Shutdown first revokes renderer admission and cancels document-owned work, then closes listeners, sends the platform-independent host shutdown message, aborts and awaits active bridge operations, and disposes the profile tree before the child exits. An unconditional process kill ends only a child that does not reach quiescence within the bounded grace period. Fatal renderer or IPC failures follow the same drain path and preserve a nonzero application exit; their notification and error-dialog copy comes from the OS-locale native dictionary.
 
 Desktop user-patch reload is frozen because the vendored config-HMR service requires Node internals the Electron binary does not expose. Host and client remain one release unit; a partial renderer update is unsupported.
 
 ### Verification
 
-Unit suites pin IPC field validation, request and response serialization, bounded response streaming, cancellation, runtime dispatch, and virtual registry lifecycle. A REAL-composition suite boots the desktop profile, verifies the retained rows are active, compares shared browser roster entries and scheduling phases with Web except for transport-owned HMR, and reads the exact shared boot graph.
+Unit suites pin IPC field validation, request and response serialization, response-body reader cancellation, bounded response streaming, runtime dispatch, native locale copy, and virtual registry lifecycle. A REAL-composition suite boots the desktop profile, verifies the retained rows are active, compares shared browser roster entries and scheduling phases with Web except for transport-owned HMR, and reads the exact shared boot graph.
 
-The built-application Playwright suite forbids socket listens in the host child; rejects foreign authorities, frames, windows, redirects, and malformed IPC; and verifies reload cancellation, single-instance rejection, renderer failure, normal exit, signals, bridge disposal, and final host-child exit. Linux PR and master CI run the suite under Xvfb; local macOS runs it directly. A keyless recorded-session scenario replays through `dsh --profile desktop`.
+The built-application Playwright suite forbids socket listens in the host child; rejects foreign authorities, frames, windows, redirects, and malformed IPC; and verifies reload and shutdown admission cancellation, single-instance rejection, renderer failure, normal exit, signals, bridge disposal, forced termination of a blocked disposer, and final host-child exit. Linux PR and master CI run the suite under Xvfb; Windows and macOS PR CI run it natively. A keyless recorded-session scenario replays through `dsh --profile desktop`.
 
 ## Alternatives considered
 

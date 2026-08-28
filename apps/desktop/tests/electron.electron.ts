@@ -15,6 +15,7 @@ const LISTEN_GUARD = pathToFileURL(fileURLToPath(new URL('./fixtures/forbid-list
 const electronExecutable = createRequire(new URL('../package.json', import.meta.url))('electron') as string
 
 interface FixtureEvent {
+  readonly detail?: string
   readonly type: string
   readonly pid: number
 }
@@ -40,7 +41,7 @@ afterEach(async () => {
 })
 
 /** Launch the built app with an isolated profile and a socket-listen guard in its host child. */
-async function launchDesktop(): Promise<RunningDesktop> {
+async function launchDesktop(options: { readonly blockDisposeMs?: number } = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
   const userData = join(root, 'electron')
@@ -62,6 +63,7 @@ async function launchDesktop(): Promise<RunningDesktop> {
   )
   const env: Record<string, string> = {
     ...inheritedEnv,
+    DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS: String(options.blockDisposeMs ?? 0),
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -71,7 +73,7 @@ async function launchDesktop(): Promise<RunningDesktop> {
   }
   const app = await electron.launch({
     executablePath: electronExecutable,
-    args: [`--user-data-dir=${userData}`, DESKTOP_DIR],
+    args: ['--lang=en-US', `--user-data-dir=${userData}`, DESKTOP_DIR],
     env,
   })
   const output = { stderr: '', stdout: '' }
@@ -129,6 +131,49 @@ async function suppressFatalUi(app: ElectronApplication): Promise<void> {
     dialog.showErrorBox = () => {}
     Notification.isSupported = () => false
   })
+}
+
+/** Re-deliver navigation completion after shutdown, then probe the authoritative IPC check. */
+async function installShutdownFetchProbe(fixture: RunningDesktop): Promise<void> {
+  await fixture.app.evaluate(({ app, BrowserWindow }, eventsPath) => {
+    app.once('before-quit', () => {
+      const webContents = BrowserWindow.getAllWindows()[0]?.webContents
+      const fs = process.getBuiltinModule('node:fs')
+      if (webContents === undefined || fs === undefined) return
+      const record = (type: string, detail?: string): void => {
+        fs.appendFileSync(eventsPath, `${JSON.stringify({ type, pid: process.pid, detail })}\n`)
+      }
+      const currentUrl = webContents.getURL()
+      webContents.emit(
+        'did-frame-navigate', {}, currentUrl, 200, 'OK', true, 0, 0,
+      )
+      webContents.emit(
+        'did-fail-provisional-load', {}, -3, 'aborted', currentUrl, true,
+      )
+      void webContents.executeJavaScript(`
+        globalThis.__DSH_TRANSPORT__.fetch(
+          new URL('/api/__desktop_e2e_hold', location.href),
+          { method: 'POST', body: '{}' },
+        ).then(
+          () => ({ accepted: true }),
+          error => ({ accepted: false, detail: String(error) }),
+        )
+      `).then((result: unknown) => {
+        if (typeof result === 'object' && result !== null && 'accepted' in result) {
+          const value = result as { accepted: unknown; detail?: unknown }
+          if (value.accepted === true) record('shutdown-fetch-accepted')
+          else record('shutdown-fetch-rejected', typeof value.detail === 'string' ? value.detail : undefined)
+          return
+        }
+        record('shutdown-fetch-invalid-result')
+      }, (error: unknown) => {
+        record(
+          'shutdown-fetch-evaluation-failed',
+          error instanceof Error ? error.message : typeof error === 'string' ? error : undefined,
+        )
+      })
+    })
+  }, fixture.eventsPath)
 }
 
 /** Start one held fetch and stream from the current renderer document. */
@@ -346,6 +391,31 @@ describe('the built Electron desktop application', () => {
     expect(exit).toEqual({ code: 0, signal: null })
     running.delete(fixture)
     await waitForEvent(fixture, 'dispose-end')
+    expect(processIsAlive(hostPid)).toBe(false)
+    await rm(fixture.root, { recursive: true, force: true })
+  })
+
+  it('revokes renderer admission and force-terminates a host blocked in disposal', async () => {
+    const fixture = await launchDesktop({ blockDisposeMs: 60_000 })
+    await installShutdownFetchProbe(fixture)
+    const hostPid = (await fixtureEvents(fixture)).find(event => event.type === 'fixture-ready')!.pid
+    const applicationProcess = fixture.app.process()
+    const startedAt = performance.now()
+    const close = fixture.app.close()
+
+    await waitForEvent(fixture, 'shutdown-fetch-rejected')
+    await close
+
+    expect(performance.now() - startedAt).toBeLessThan(20_000)
+    expect(await processExit(applicationProcess)).toEqual({ code: 0, signal: null })
+    running.delete(fixture)
+    await waitForEvent(fixture, 'dispose-start')
+    const events = await fixtureEvents(fixture)
+    expect(events.find(event => event.type === 'shutdown-fetch-rejected')?.detail)
+      .toContain('carrier rejected a foreign sender')
+    expect(events.some(event => event.type === 'shutdown-fetch-accepted')).toBe(false)
+    expect(events.some(event => event.type === 'fetch-start')).toBe(false)
+    expect(events.some(event => event.type === 'dispose-end')).toBe(false)
     expect(processIsAlive(hostPid)).toBe(false)
     await rm(fixture.root, { recursive: true, force: true })
   })
