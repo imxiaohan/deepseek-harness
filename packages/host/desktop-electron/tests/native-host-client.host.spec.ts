@@ -52,7 +52,7 @@ describe('native host client', () => {
     const waited = client.pickDirectory(new AbortController().signal)
     client.dispose()
     expect(disposed()).toBe(true)
-    deliver({ type: 'pick-directory-res', id: DesktopIpcId((sent[0] as { id: string }).id), path: '/late' })
+    deliver({ t: 'pick-directory-res', id: DesktopIpcId((sent[0] as { id: string }).id), path: '/late' })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(waited).toBeInstanceOf(Promise)
   })

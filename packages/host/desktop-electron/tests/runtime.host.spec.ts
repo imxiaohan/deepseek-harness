@@ -2,8 +2,10 @@ import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   apply,
+  DesktopIpcId,
   DesktopRuntime,
   VirtualWebServer,
+  type DesktopIpcMessage,
 } from '../src/index.ts'
 
 let ctx: Context | undefined
@@ -110,8 +112,8 @@ describe('DesktopRuntime', () => {
     expect(() => runtime.pickDirectory(new AbortController().signal))
       .toThrow('no native host lane is bound')
 
-    const listeners = new Set<(message: unknown) => void>()
-    const sent: unknown[] = []
+    const listeners = new Set<(message: DesktopIpcMessage) => void>()
+    const sent: DesktopIpcMessage[] = []
     const detach = runtime.attachNativeHost({
       send: (message) => { sent.push(message) },
       onMessage: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
@@ -121,7 +123,7 @@ describe('DesktopRuntime', () => {
     const request = sent[0] as { t: string; id: string }
     expect(request.t).toBe('pick-directory')
     for (const listener of [...listeners]) {
-      listener({ t: 'pick-directory-res', id: request.id, path: '/chosen' })
+      listener({ t: 'pick-directory-res', id: DesktopIpcId(request.id), path: '/chosen' })
     }
     await expect(waited).resolves.toBe('/chosen')
 
