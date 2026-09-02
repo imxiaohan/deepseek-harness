@@ -4,9 +4,9 @@
  * controls), `body[data-ds-dark-theme]` for the token palette, the active
  * theme's alias-token overrides as inline CSS variables on body, the content
  * font-size axis (`--dsh-content-font-size`), and one presenter-owned
- * `meta[name="theme-color"]` for surrounding browser UI. Pure DOM writes, no
- * React involvement; the presenter only ever retracts what it wrote itself,
- * so foreign attributes, metadata, and inline styles survive.
+ * `meta[name="theme-color"]` for surrounding browser UI and embedding shells.
+ * Pure DOM writes, no React involvement; the presenter only ever retracts what
+ * it wrote itself, so foreign attributes, metadata, and inline styles survive.
  */
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
 
@@ -52,6 +52,7 @@ export class ThemePresenter {
       this.appliedTokens.push(name)
     }
     this.themeColorMeta.content = getComputedStyle(body).backgroundColor
+    this.themeColorMeta.dataset.dshThemeSource = snapshot.preference
     if (!this.themeColorMeta.isConnected) document.head.append(this.themeColorMeta)
   }
 

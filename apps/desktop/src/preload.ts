@@ -15,6 +15,10 @@ import {
   type PreloadRpc,
 } from '@deepseek-ai/dsh-host-desktop-electron'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
+import {
+  DESKTOP_WINDOW_THEME_CHANNEL,
+  parseDesktopWindowThemeSource,
+} from './window-theme.ts'
 
 const on: PreloadOn = (channel, listener) => {
   const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => { listener(payload) }
@@ -30,3 +34,31 @@ const rpc: PreloadRpc = {
 }
 
 ;(globalThis as { __DSH_TRANSPORT__?: unknown }).__DSH_TRANSPORT__ = createDesktopTransport(rpc)
+
+/** Relay presenter-owned theme metadata to the native window frame. */
+function startWindowThemeSync(): void {
+  let published: string | undefined
+  const publish = (): void => {
+    const source = parseDesktopWindowThemeSource(
+      document.head.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.dataset.dshThemeSource,
+    )
+    if (source === undefined || source === published) return
+    published = source
+    ipcRenderer.send(DESKTOP_WINDOW_THEME_CHANNEL, source)
+  }
+  const observer = new MutationObserver(publish)
+  observer.observe(document.head, {
+    attributes: true,
+    attributeFilter: ['content', 'data-dsh-theme-source'],
+    childList: true,
+    subtree: true,
+  })
+  publish()
+  addEventListener('unload', () => { observer.disconnect() }, { once: true })
+}
+
+if (document.readyState === 'loading') {
+  addEventListener('DOMContentLoaded', startWindowThemeSync, { once: true })
+} else {
+  startWindowThemeSync()
+}

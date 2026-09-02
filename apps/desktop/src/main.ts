@@ -23,6 +23,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  nativeTheme,
   Notification,
   protocol,
   session,
@@ -44,6 +45,10 @@ import {
   type DesktopIpcMessage,
 } from '@deepseek-ai/dsh-host-desktop-electron'
 import { desktopNativeCopy, type DesktopFatalStage } from './locale.ts'
+import {
+  DESKTOP_WINDOW_THEME_CHANNEL,
+  parseDesktopWindowThemeSource,
+} from './window-theme.ts'
 
 /** The privileged scheme the application index and plugin bundles serve over. */
 const APP_SCHEME = 'dsh-desktop'
@@ -470,6 +475,15 @@ if (!app.requestSingleInstanceLock()) {
       callback({ cancel: !trustedSchemeInitiator(details) })
     })
     protocol.handle(APP_SCHEME, request => serveScheme(request))
+    ipcMain.on(DESKTOP_WINDOW_THEME_CHANNEL, (event, payload) => {
+      if (!carrierSenderOk(event)) return
+      const source = parseDesktopWindowThemeSource(payload)
+      if (source === undefined) {
+        invalidRendererMessage('fatal.renderer.invalidWindowTheme')
+        return
+      }
+      nativeTheme.themeSource = source
+    })
     ipcMain.handle(DESKTOP_FETCH_CHANNEL, (event, payload) => {
       if (!carrierSenderOk(event)) throw new Error('dsh desktop: carrier rejected a foreign sender')
       const message = rendererMessage('fetch', payload)

@@ -25,6 +25,7 @@ CLI 解析其安装的 `@deepseek-ai/dsh-desktop` 程序集，并通过经过校
 - 宿主包提供虚拟 `webServer` 服务，因为保留的 node 行为插件路由、index 注入、`/api` 路由与 Gateway upgrade 注入该服务。其路由注册表不拥有服务器或套接字；`host` 返回宿主侧回环权威，`port` 抛错。
 - 宿主包还提供 `desktopRuntime`。它通过虚拟注册表分发插件资源请求，通过 `HostConnectionService.createSharedFetchHandler('/api')` 分发 API 请求，通过 Gateway wire 通道分发逻辑 stream，并通过共享 module graph 生成器提供 index 启动数据。
 - preload 在客户端插件加载前安装 `window.__DSH_TRANSPORT__ = { fetch, openStream, ownsHost: true }`。connection 客户端消费与实验性 worker 载体相同的传输钩子。壳使用 `contextIsolation: false`，使浏览器原生 `Request`、`Response` 与 stream 值按引用跨越；每次载体调用都由 Electron 主进程授权，而非依赖 renderer world 隔离。
+- 主题呈现器在其自有 `theme-color` 元数据上记录所选的 `light`、`dark` 或 `system` 来源。preload 从获准文档中继来源变化，Electron 主进程通过 `nativeTheme.themeSource` 应用它们，使操作系统标题栏、窗口边框与菜单跟随页面，同时让 `system` 继续响应操作系统变化。
 - renderer fetch 与逻辑 stream 经 Electron 主进程中继到宿主子进程。abort 消息穿过两段 IPC 并到达宿主操作的 signal。reload、主 frame 导航、窗口关闭、renderer 故障与壳关机都会取消离场 renderer 代际拥有的操作。
 - 特权 `dsh-desktop://` 协议提供已注入的应用 index 与注册插件 bundle。协议上的 `/api` 请求使用同一宿主 fetch 通道，包括 Session 导出；响应体以 pull 驱动的二进制分块跨越宿主/主进程通道，因此两端都不会实体化完整归档。
 
@@ -44,9 +45,9 @@ profile 树运行在宿主子进程中，同一 Electron 二进制以 `ELECTRON_
 
 ### 验证
 
-单元测试钉住 IPC 字段校验、请求与响应序列化、响应体 reader 取消、有界响应流、runtime 分发、原生 locale 文案与虚拟注册表生命周期。REAL-composition 测试启动 desktop profile，验证保留行处于 ACTIVE，比较与 Web 共享的浏览器 roster 行及调度阶段（排除传输自有 HMR），并读取同一个共享 boot graph。
+单元测试钉住 IPC 字段校验、窗口主题来源校验、请求与响应序列化、响应体 reader 取消、有界响应流、runtime 分发、原生 locale 文案与虚拟注册表生命周期。REAL-composition 测试启动 desktop profile，验证保留行处于 ACTIVE，比较与 Web 共享的浏览器 roster 行及调度阶段（排除传输自有 HMR），并读取同一个共享 boot graph。
 
-已构建应用的 Playwright 测试禁止宿主子进程监听套接字，拒绝外部权威、frame、window、redirect 与非法 IPC，并验证 reload 和关机准入取消、单实例拒绝、renderer 故障、正常退出、信号、桥销毁、阻塞 disposer 的强制终止与宿主子进程最终退出。Linux 的 PR 和 master CI 在 Xvfb 下运行该套件；Windows 与 macOS 的 PR CI 原生运行。一个 keyless 记录会话场景经 `dsh --profile desktop` replay。
+已构建应用的 Playwright 测试禁止宿主子进程监听套接字，拒绝外部权威、frame、window、redirect 与非法 IPC，并验证原生窗口主题投影、reload 和关机准入取消、单实例拒绝、renderer 故障、正常退出、信号、桥销毁、阻塞 disposer 的强制终止与宿主子进程最终退出。Linux 的 PR 和 master CI 在 Xvfb 下运行该套件；Windows 与 macOS 的 PR CI 原生运行。一个 keyless 记录会话场景经 `dsh --profile desktop` replay。
 
 ## 考虑过的替代方案
 

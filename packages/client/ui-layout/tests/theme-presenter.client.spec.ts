@@ -44,6 +44,7 @@ describe('ThemePresenter', () => {
     expect(document.documentElement.style.colorScheme).toBe('light')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
     expect(themeColorMeta()?.content).toBe(LIGHT_THEME_COLOR)
+    expect(themeColorMeta()?.dataset.dshThemeSource).toBe('light')
   })
 
   it('dark scheme sets root color-scheme, the attribute, and metadata; switching to light updates one node', () => {
@@ -53,11 +54,13 @@ describe('ThemePresenter', () => {
     expect(document.documentElement.style.colorScheme).toBe('dark')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(true)
     expect(meta?.content).toBe(DARK_THEME_COLOR)
+    expect(meta?.dataset.dshThemeSource).toBe('dark')
     presenter.apply(snapshot('light'))
     expect(document.documentElement.style.colorScheme).toBe('light')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
     expect(themeColorMeta()).toBe(meta)
     expect(meta?.content).toBe(LIGHT_THEME_COLOR)
+    expect(meta?.dataset.dshThemeSource).toBe('light')
     expect(document.head.querySelectorAll('meta[name="theme-color"]')).toHaveLength(1)
   })
 

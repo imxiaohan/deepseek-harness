@@ -207,6 +207,29 @@ async function startHeldOperations(page: Page, addUnloadFetch = false): Promise<
 }
 
 describe('the built Electron desktop application', () => {
+  it('projects page theme changes onto native window chrome', async () => {
+    const { app, page } = await launchDesktop()
+    const nativeThemeSource = async (): Promise<string> => app.evaluate(
+      ({ nativeTheme }) => nativeTheme.themeSource,
+    )
+
+    await expect.poll(nativeThemeSource, { timeout: 10_000 }).toBe('system')
+    const welcome = page.getByRole('dialog', { name: 'Internal Testing Notice' })
+    await welcome.waitFor({ timeout: 15_000 })
+    await welcome.getByRole('button', { name: 'Continue', exact: true }).click()
+    await welcome.waitFor({ state: 'detached', timeout: 15_000 })
+    const configureLater = page.getByRole('button', { name: 'Configure later', exact: true })
+    await configureLater.waitFor({ timeout: 15_000 })
+    await configureLater.click()
+    await configureLater.waitFor({ state: 'detached', timeout: 15_000 })
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await dialog.getByRole('button', { name: 'Dark', exact: true }).click()
+    await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('dark')
+    await dialog.getByRole('button', { name: 'System', exact: true }).click()
+    await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('system')
+  })
+
   it('enforces authority, survives reload, rejects a second instance, and quits cleanly', async () => {
     const fixture = await launchDesktop()
     const { app, page } = fixture
