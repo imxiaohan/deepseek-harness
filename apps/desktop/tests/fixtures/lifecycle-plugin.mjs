@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 
 export const name = 'desktop-e2e-lifecycle'
 export const inject = ['desktopRuntime']
@@ -9,9 +10,39 @@ function record(type, fields = {}) {
   appendFileSync(path, `${JSON.stringify({ type, pid: process.pid, ...fields })}\n`)
 }
 
+/** Invoke one native directory pick through the desktopRuntime lane and record its outcome. */
+function runNativePickProbe(ctx) {
+  const runtime = ctx.get('desktopRuntime')
+  if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
+  if (runtime.pickDirectory === undefined) {
+    record('native-pick-unavailable')
+    return
+  }
+  void runtime.pickDirectory(new AbortController().signal).then((path) => {
+    record('native-pick-resolved', { path })
+  }, (error) => {
+    record('native-pick-rejected', { detail: String(error) })
+  })
+}
+
 export function apply(ctx) {
   const runtime = ctx.get('desktopRuntime')
   if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
+  // The main-process `dialog` stub is installed by the test after launch;
+  // a boot-time probe would race it (and open a real chooser in CI). Trigger
+  // the pick when the test writes a marker into this fixture's root. Interval
+  // polling keeps the fixture dependency-free and the ordering deterministic.
+  const triggerPath = process.env.DSH_DESKTOP_E2E_PICK_TRIGGER
+  if (triggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(triggerPath)) {
+        clearInterval(timer)
+        runNativePickProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
   ctx.effect(() => {
     const originalFetch = runtime.fetch
     const originalOpenStream = runtime.openStream

@@ -129,6 +129,21 @@ export interface DesktopShutdownMessage {
   readonly code: 0 | 1
 }
 
+/** Route one host-native directory pick through the Electron main process. */
+export interface DesktopPickDirectoryMessage {
+  readonly t: 'pick-directory'
+  /** Correlation id; the matching response carries it back. */
+  readonly id: DesktopIpcId
+}
+
+/** The main process's answer to one host directory pick. */
+export interface DesktopPickDirectoryResultMessage {
+  readonly t: 'pick-directory-res'
+  readonly id: DesktopIpcId
+  /** The absolute directory the operator chose, or null when cancelled. */
+  readonly path: string | null
+}
+
 /** Every message the carrier protocol carries. */
 export type DesktopIpcMessage =
   | DesktopFetchMessage
@@ -145,6 +160,8 @@ export type DesktopIpcMessage =
   | DesktopStreamErrorMessage
   | DesktopBootResponseMessage
   | DesktopShutdownMessage
+  | DesktopPickDirectoryMessage
+  | DesktopPickDirectoryResultMessage
 
 /** One direction of the host-child channel: send a protocol message. */
 export type DesktopHostSend = (message: DesktopIpcMessage) => void
@@ -269,6 +286,14 @@ export function parseDesktopIpcMessage(value: unknown): DesktopIpcMessage | unde
       break
     case 'shutdown':
       if (!hasFields(value, ['t', 'code']) || value.code !== 0 && value.code !== 1) return undefined
+      break
+    case 'pick-directory':
+      if (!hasFields(value, ['t', 'id']) || typeof value.id !== 'string') return undefined
+      break
+    case 'pick-directory-res':
+      if (!hasFields(value, ['t', 'id', 'path'])
+        || typeof value.id !== 'string'
+        || value.path !== null && typeof value.path !== 'string') return undefined
       break
     default:
       return undefined

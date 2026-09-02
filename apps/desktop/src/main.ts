@@ -313,11 +313,33 @@ function handleHostMessage(message: DesktopIpcMessage): void {
       }
       return
     }
+    case 'pick-directory': {
+      void answerPickDirectory(message).catch((cause: unknown) => {
+        if (quitting) return
+        reportFatal('fatal.host.nativePick', cause)
+        quitAfterFatal()
+      })
+      return
+    }
     default:
       // Requests flow main→host only; an inbound request shape is a protocol
       // echo the main process ignores.
       return
   }
+}
+
+/** Show one native directory chooser and relay the operator's pick to the host child. */
+async function answerPickDirectory(message: Extract<DesktopIpcMessage, { t: 'pick-directory' }>): Promise<void> {
+  const window = mainWindow
+  const options: Electron.OpenDialogOptions = {
+    title: nativeCopy().directoryPickerTitle,
+    properties: ['openDirectory', 'createDirectory'],
+  }
+  const result = window === undefined || window.isDestroyed() || window.webContents.isDestroyed()
+    ? await dialog.showOpenDialog(options)
+    : await dialog.showOpenDialog(window, options)
+  const path = result.canceled ? null : result.filePaths[0] ?? null
+  await sendHostMessage({ t: 'pick-directory-res', id: message.id, path })
 }
 
 /** Create the window over the privileged scheme (or a host-announced URL in Web-profile mode). */

@@ -3,6 +3,7 @@
 const zh = {
   applicationTitle: 'DeepSeek Harness',
   fatalPrefix: 'dsh desktop',
+  directoryPickerTitle: '选择工作区目录',
   fatalStages: {
     'fatal.renderer.invalidFetch': 'renderer 发送了非法 fetch 消息',
     'fatal.renderer.invalidFetchCancellation': 'renderer 发送了非法 fetch 取消消息',
@@ -13,6 +14,7 @@ const zh = {
     'fatal.renderer.processExited': 'renderer 进程已退出',
     'fatal.renderer.loadFailed': 'renderer 加载失败',
     'fatal.host.invalidCarrierMessage': '宿主进程发送了非法载体消息',
+    'fatal.host.nativePick': '原生目录选择失败',
     'fatal.host.processExited': '宿主进程已退出',
     'fatal.host.startFailed': '宿主进程启动失败',
   },
@@ -26,6 +28,8 @@ export type DesktopFatalStage = keyof typeof zh.fatalStages
 /** Complete copy required by Electron-native presentation. */
 export interface DesktopNativeCopy {
   readonly applicationTitle: string
+  /** Localized title for the native workspace-directory chooser. */
+  readonly directoryPickerTitle: string
   readonly fatalPrefix: string
   readonly fatalStages: Record<DesktopFatalStage, string>
   /**
@@ -46,6 +50,7 @@ export interface DesktopNativeCopy {
 const en = {
   applicationTitle: 'DeepSeek Harness',
   fatalPrefix: 'dsh desktop',
+  directoryPickerTitle: 'Choose a workspace directory',
   fatalStages: {
     'fatal.renderer.invalidFetch': 'renderer sent an invalid fetch message',
     'fatal.renderer.invalidFetchCancellation': 'renderer sent an invalid fetch cancellation message',
@@ -56,6 +61,7 @@ const en = {
     'fatal.renderer.processExited': 'renderer process exited',
     'fatal.renderer.loadFailed': 'renderer failed to load',
     'fatal.host.invalidCarrierMessage': 'host process sent an invalid carrier message',
+    'fatal.host.nativePick': 'native directory pick failed',
     'fatal.host.processExited': 'host process exited',
     'fatal.host.startFailed': 'host process failed to start',
   },

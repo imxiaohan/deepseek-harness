@@ -21,6 +21,7 @@ import {
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
+  DesktopRuntime,
   parseDesktopIpcMessage,
   serveDesktopHost,
   type DesktopHostChannel,
@@ -63,7 +64,7 @@ const booted = await runProfile({
   args: invocation.args,
 })
 
-const desktopRuntime = booted.ctx.get('desktopRuntime') as DesktopHostRuntime | undefined
+const desktopRuntime = booted.ctx.get('desktopRuntime') as DesktopHostRuntime & Partial<Pick<DesktopRuntime, 'pickDirectory' | 'attachNativeHost'>> | undefined
 let disposeBridge = async (): Promise<void> => {}
 let stopping: Promise<void> | undefined
 const stopHost = (code: 0 | 1): Promise<void> => {
@@ -107,6 +108,12 @@ if (parentDisconnected) {
     failure: error => desktopRuntime.failure(error),
     bootPayload: () => desktopRuntime.bootPayload(),
   })
+  const releaseNative = desktopRuntime.attachNativeHost?.(channel)
+  const parentDispose = disposeBridge
+  disposeBridge = async () => {
+    releaseNative?.()
+    await parentDispose()
+  }
   console.log(`dsh desktop host: carrier ready (${PROFILE} profile)`)
 
   receiveMessage = (value) => {

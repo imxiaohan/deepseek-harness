@@ -103,4 +103,29 @@ describe('DesktopRuntime', () => {
       injections: [{ kind: 'global', name: '__BOOT__', value: { ready: true } }],
     })
   })
+
+  it('routes a native directory pick through a bound carrier lane', async () => {
+    const current = context()
+    const runtime = new DesktopRuntime(current)
+    expect(() => runtime.pickDirectory(new AbortController().signal))
+      .toThrow('no native host lane is bound')
+
+    const listeners = new Set<(message: unknown) => void>()
+    const sent: unknown[] = []
+    const detach = runtime.attachNativeHost({
+      send: (message) => { sent.push(message) },
+      onMessage: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+    })
+    const waited = runtime.pickDirectory(new AbortController().signal)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const request = sent[0] as { t: string; id: string }
+    expect(request.t).toBe('pick-directory')
+    for (const listener of [...listeners]) {
+      listener({ t: 'pick-directory-res', id: request.id, path: '/chosen' })
+    }
+    await expect(waited).resolves.toBe('/chosen')
+
+    detach()
+    expect(listeners.size).toBe(0)
+  })
 })

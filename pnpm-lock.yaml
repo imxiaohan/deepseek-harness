@@ -1504,6 +1504,9 @@ importers:
       '@deepseek-ai/dsh-host-directory-picker-browse':
         specifier: workspace:^
         version: link:../../host/directory-picker-browse
+      '@deepseek-ai/dsh-host-directory-picker-electron':
+        specifier: workspace:^
+        version: link:../../host/directory-picker-electron
       '@deepseek-ai/dsh-host-directory-picker-native':
         specifier: workspace:^
         version: link:../../host/directory-picker-native
@@ -6009,6 +6012,22 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+
+  packages/host/directory-picker-electron:
+    dependencies:
+      '@deepseek-ai/dsh-host-desktop-electron':
+        specifier: workspace:^
+        version: link:../desktop-electron
+      '@deepseek-ai/dsh-host-directory-picker':
+        specifier: workspace:^
+        version: link:../directory-picker
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
 
   packages/host/directory-picker-native:
     dependencies:

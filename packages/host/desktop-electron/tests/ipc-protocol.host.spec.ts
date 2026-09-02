@@ -29,6 +29,9 @@ const valid: DesktopIpcMessage[] = [
   },
   { t: 'shutdown', code: 0 },
   { t: 'shutdown', code: 1 },
+  { t: 'pick-directory', id: DesktopIpcId('p') },
+  { t: 'pick-directory-res', id: DesktopIpcId('p'), path: '/dir' },
+  { t: 'pick-directory-res', id: DesktopIpcId('p'), path: null },
 ]
 
 describe('desktop IPC parser', () => {
@@ -72,6 +75,12 @@ describe('desktop IPC parser', () => {
     { t: 'fetch-error', id: 'f', error: 1 },
     { t: 'shutdown', code: 2 },
     { t: 'shutdown', code: 0, extra: true },
+    { t: 'pick-directory', id: 1 },
+    { t: 'pick-directory' },
+    { t: 'pick-directory', id: 'p', extra: true },
+    { t: 'pick-directory-res', id: 1, path: '/dir' },
+    { t: 'pick-directory-res', id: 'p' },
+    { t: 'pick-directory-res', id: 'p', path: 1 },
   ])('rejects malformed traffic: %j', (value) => {
     expect(parseDesktopIpcMessage(value)).toBeUndefined()
   })

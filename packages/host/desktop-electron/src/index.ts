@@ -12,8 +12,11 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { VirtualWebServer } from './virtual-web-server.ts'
+import { createNativeHostClient } from './native-host-client.ts'
+import type { DesktopHostChannel } from './ipc-protocol.ts'
 
 export { VirtualWebServer } from './virtual-web-server.ts'
+export { createNativeHostClient } from './native-host-client.ts'
 export {
   serveDesktopHost,
   type DesktopHostRuntime,
@@ -149,6 +152,39 @@ export class DesktopRuntime extends Service {
     return { injections: webServer.collectIndexInjections() }
   }
 
+  private nativeHost: NativePickLane | undefined
+
+  /**
+   * Open a native directory chooser through the Electron main process.
+   * `apps/desktop/src/host.ts` binds this lane over the carrier channel; the
+   * picker provider reaches it here so no provider owns channel internals.
+   * @param signal - caller/connection lifetime; abort drops the pending sayobody.
+   * @returns the chosen absolute path, or null when the operator cancels.
+   * @throws {Error} when no native lane is bound (non-desktop composition).
+   */
+  pickDirectory(signal: AbortSignal): Promise<string | null> {
+    const lane = this.nativeHost
+    if (lane === undefined) {
+      throw new Error('desktop-electron: no native host lane is bound in this composition')
+    }
+    return lane.pickDirectory(signal)
+  }
+
+  /**
+   * Bind the native-op lane over the carrier channel.
+   * @param channel - the host child's process channel.
+   * @returns a disposer detaching the native host listener.
+   */
+  attachNativeHost(channel: DesktopHostChannel): () => void {
+    const client = createNativeHostClient(channel)
+    this.nativeHost = client
+    return client.dispose
+  }
+}
+
+/** The native-op lane the Electron main process answers over the carrier. */
+interface NativePickLane {
+  pickDirectory(signal: AbortSignal): Promise<string | null>
 }
 
 /**

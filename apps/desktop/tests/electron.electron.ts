@@ -25,6 +25,7 @@ interface RunningDesktop {
   readonly env: Record<string, string>
   readonly eventsPath: string
   readonly page: Page
+  readonly pickTrigger?: string
   readonly root: string
   readonly userData: string
   readonly output: { stderr: string; stdout: string }
@@ -41,7 +42,10 @@ afterEach(async () => {
 })
 
 /** Launch the built app with an isolated profile and a socket-listen guard in its host child. */
-async function launchDesktop(options: { readonly blockDisposeMs?: number } = {}): Promise<RunningDesktop> {
+async function launchDesktop(options: {
+  readonly blockDisposeMs?: number
+  readonly pickTriggerPath?: string
+} = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
   const userData = join(root, 'electron')
@@ -64,6 +68,7 @@ async function launchDesktop(options: { readonly blockDisposeMs?: number } = {})
   const env: Record<string, string> = {
     ...inheritedEnv,
     DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS: String(options.blockDisposeMs ?? 0),
+    ...options.pickTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_PICK_TRIGGER: options.pickTriggerPath },
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -84,7 +89,16 @@ async function launchDesktop(options: { readonly blockDisposeMs?: number } = {})
   await page.waitForFunction(() => (
     globalThis as typeof globalThis & { __DSH_TRANSPORT__?: { ownsHost?: unknown } }
   ).__DSH_TRANSPORT__?.ownsHost === true)
-  const fixture = { app, env, eventsPath, page, root, userData, output }
+  const fixture = {
+    app,
+    env,
+    eventsPath,
+    page,
+    ...options.pickTriggerPath === undefined ? {} : { pickTrigger: options.pickTriggerPath },
+    root,
+    userData,
+    output,
+  } as RunningDesktop
   running.add(fixture)
   await waitForEvent(fixture, 'fixture-ready')
   return fixture
@@ -228,6 +242,27 @@ describe('the built Electron desktop application', () => {
     await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('dark')
     await dialog.getByRole('button', { name: 'System', exact: true }).click()
     await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('system')
+  })
+
+  it('routes a native directory pick through main and back to the host', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'dir-pick-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ pickTriggerPath: trigger })
+    const { app } = fixture
+    expect(fixture.pickTrigger).toBe(trigger)
+    // The OS chooser cannot be driven by Playwright; stub the main-process
+    // dialog so the host→main→host round trip is exercised with a fixed path.
+    const chosen = '/home/test/workspace'
+    await suppressFatalUi(app)
+    await app.evaluate(({ dialog }, selected) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] })
+    }, chosen)
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'native-pick-resolved')
+    const resolved = (await fixtureEvents(fixture)).find(event => event.type === 'native-pick-resolved')
+    expect(resolved).toBeDefined()
+    expect((resolved as { path?: unknown }).path).toBe(chosen)
+    await rm(triggerDir, { recursive: true, force: true })
   })
 
   it('enforces authority, survives reload, rejects a second instance, and quits cleanly', async () => {

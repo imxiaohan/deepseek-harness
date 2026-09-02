@@ -134,6 +134,14 @@ describe('the desktop profile composition', () => {
     }
   }, 120_000)
 
+  it('composes the desktop Electron-native directory picker behind the seam', () => {
+    const picker = ctx!.get('directoryPicker') as {
+      capability(): { kind: string }
+    } | undefined
+    expect(picker).toBeDefined()
+    expect(picker!.capability().kind).toBe('native')
+  })
+
   it('serves the advertised startup batch through the carrier lane', async () => {
     const runtime = ctx!.get('desktopRuntime') as {
       bootPayload(): { injections: readonly { kind: string; name?: string; value?: unknown }[] }

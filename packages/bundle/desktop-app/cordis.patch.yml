@@ -72,11 +72,14 @@
     - id: session-stats
       name: '@deepseek-ai/dsh-session-stats'
 
-    # Resolve bind host, SSH launch, and display once at boot, then mount the
-    # matching dual-face directory picker. Mount -native or -browse directly in
-    # an overlay to pin the interaction.
+    # The desktop shell pins the Electron-native interaction: the host
+    # backend routes each pick to Electron main (which owns the OS dialog),
+    # paired with the renderless client surface that drives `directoryPicker/pick`.
     - id: directory-picker
-      name: '@deepseek-ai/dsh-host-directory-picker-auto'
+      name: '@deepseek-ai/dsh-host-directory-picker-electron'
+
+    - id: directory-picker-surface
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-native'
 
     # Read-only projection of current Loader entries for trusted client RPCs.
     - id: plugin-inventory
