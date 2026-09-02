@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-desktop-app",
   "description": "The dsh desktop-surface bundle: the desktop patch layer over dsh-base — the same roster as the Web surface with the HTTP carrier rows replaced by the desktop-electron virtual webServer and the IPC carrier",
-  "version": "0.1.2-alpha.1",
+  "version": "0.1.2-alpha.4",
   "publishConfig": {
     "access": "public"
   },

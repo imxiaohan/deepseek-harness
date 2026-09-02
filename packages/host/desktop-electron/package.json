@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-host-desktop-electron",
   "description": "The desktop shell's host plugin: a virtual webServer service over the IPC carrier (route registry + index injections, zero listening sockets), the desktopRuntime lane (API and plugin-asset fetches, Gateway wire streams, boot payload), and the Electron-free carrier protocol shared by the host child and the app",
-  "version": "0.1.2-alpha.1",
+  "version": "0.1.2-alpha.4",
   "publishConfig": {
     "access": "public"
   },
