@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -27,6 +28,7 @@ interface RunningDesktop {
   readonly page: Page
   readonly pickTrigger?: string
   readonly credentialTrigger?: string
+  readonly workspaceTrigger?: string
   readonly root: string
   readonly userData: string
   readonly output: { stderr: string; stdout: string }
@@ -47,6 +49,7 @@ async function launchDesktop(options: {
   readonly blockDisposeMs?: number
   readonly pickTriggerPath?: string
   readonly credentialTriggerPath?: string
+  readonly workspaceTriggerPath?: string
 } = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
@@ -72,6 +75,7 @@ async function launchDesktop(options: {
     DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS: String(options.blockDisposeMs ?? 0),
     ...options.pickTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_PICK_TRIGGER: options.pickTriggerPath },
     ...options.credentialTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER: options.credentialTriggerPath },
+    ...options.workspaceTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_WORKSPACE_TRIGGER: options.workspaceTriggerPath },
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -99,6 +103,7 @@ async function launchDesktop(options: {
     page,
     ...options.pickTriggerPath === undefined ? {} : { pickTrigger: options.pickTriggerPath },
     ...options.credentialTriggerPath === undefined ? {} : { credentialTrigger: options.credentialTriggerPath },
+    ...options.workspaceTriggerPath === undefined ? {} : { workspaceTrigger: options.workspaceTriggerPath },
     root,
     userData,
     output,
@@ -292,6 +297,31 @@ describe('the built Electron desktop application', () => {
     const described = events.find(event => event.type === 'credential-described') as { detail?: string }
     expect(JSON.parse(described.detail ?? 'null')).toEqual({ configured: true, source: 'keychain', writable: true })
     await rm(triggerDir, { recursive: true, force: true })
+  })
+
+  it('adopts a workspace from a warm deep link before any host API sees an unvalidated input', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'workspace-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const target = await mkdtemp(join(tmpdir(), 'dsh-deep-link-target-'))
+    const fixture = await launchDesktop({ workspaceTriggerPath: trigger })
+    const { app } = fixture
+    await suppressFatalUi(app)
+    // A second instance carrying the link exercises the warm ingress: the
+    // single-instance lock hands the argv to the running app and exits.
+    const second = await electron.launch({
+      executablePath: electronExecutable,
+      args: ['--lang=en-US', `--user-data-dir=${fixture.userData}`, `dsh://open?path=${encodeURIComponent(target)}`],
+      env: { ...fixture.env, DSH_DESKTOP_E2E_EVENTS: join(triggerDir, 'second-events.jsonl') },
+    })
+    await second.close().catch(() => {})
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'workspaces')
+    const recorded = (await fixtureEvents(fixture)).find(event => event.type === 'workspaces') as { detail?: string }
+    const workspaces = JSON.parse(recorded.detail ?? '[]') as Array<{ path: string; title: string }>
+    expect(workspaces).toHaveLength(1)
+    expect(workspaces[0]!.path.startsWith(realpathSync(target))).toBe(true)
+    await rm(triggerDir, { recursive: true, force: true })
+    await rm(target, { recursive: true, force: true })
   })
 
   it('enforces authority, survives reload, rejects a second instance, and quits cleanly', async () => {

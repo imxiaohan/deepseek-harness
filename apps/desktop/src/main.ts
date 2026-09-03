@@ -48,6 +48,12 @@ import {
 import { desktopNativeCopy, type DesktopFatalStage } from './locale.ts'
 import { createCredentialStore, type CredentialStore } from './credential-store.ts'
 import {
+  DESKTOP_DEEP_LINK_SCHEME,
+  extractDesktopDeepLinkArgv,
+  parseDesktopDeepLink,
+  type DesktopDeepLink,
+} from './deep-link.ts'
+import {
   DESKTOP_WINDOW_THEME_CHANNEL,
   parseDesktopWindowThemeSource,
 } from './window-theme.ts'
@@ -546,6 +552,18 @@ function bootShell(): void {
   })
   void bootSettled.then(() => {
     if (mainWindow === undefined) createWindow()
+    // The carrier is ready: drain anything the OS delivered during boot, then
+    // take the cold-start link if this launch carried one.
+    deepLinksDrained = true
+    for (const link of pendingDeepLinks.splice(0)) {
+      void dispatchDeepLink(link).catch((cause: unknown) => {
+        if (quitting) return
+        reportFatal('fatal.host.deepLink', cause)
+        quitAfterFatal()
+      })
+    }
+    const coldLink = extractDesktopDeepLinkArgv(process.argv)
+    if (coldLink !== undefined) enqueueDeepLink(coldLink)
   })
 }
 
@@ -553,10 +571,24 @@ if (!app.requestSingleInstanceLock()) {
   console.error('dsh desktop: another instance is already running; close it before launching again')
   app.exit(1)
 } else {
+  // Dev builds share one Electron binary; registering the public scheme there
+  // would claim every unpackaged dev app's links. Packaged builds own it.
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DESKTOP_DEEP_LINK_SCHEME)
+
   process.once('SIGINT', () => { app.quit() })
   process.once('SIGTERM', () => { app.quit() })
 
-  app.on('second-instance', () => { mainWindow?.focus() })
+  // macOS delivers links before readiness; queue them for the drain below.
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    enqueueDeepLink(url)
+  })
+
+  app.on('second-instance', (_event, argv) => {
+    const url = extractDesktopDeepLinkArgv(argv)
+    if (url !== undefined) enqueueDeepLink(url)
+    mainWindow?.focus()
+  })
 
   app.on('activate', () => {
     if (!quitting && mainWindow === undefined && indexHtml !== undefined) createWindow()
@@ -895,4 +927,55 @@ function requestHostShutdown(code: 0 | 1): void {
   void sendHostMessage({ t: 'shutdown', code }).catch(() => {
     if (host === child) child.kill('SIGKILL')
   })
+}
+
+/** Deep links accepted before the carrier is ready, drained once it is. */
+const pendingDeepLinks: DesktopDeepLink[] = []
+let deepLinksDrained = false
+
+/**
+ * Route one delivered link: complete validation happens here — malformed,
+ * unsupported, and cross-authority input is refused before any command or
+ * host API sees it — and the accepted intent queues until the carrier is up.
+ */
+function enqueueDeepLink(url: string): void {
+  const link = parseDesktopDeepLink(url)
+  if (link === undefined) {
+    console.warn(`dsh desktop: ignored a malformed or cross-authority deep link: ${url.slice(0, 200)}`)
+    return
+  }
+  if (deepLinksDrained) {
+    void dispatchDeepLink(link).catch((cause: unknown) => {
+      if (quitting) return
+      reportFatal('fatal.host.deepLink', cause)
+      quitAfterFatal()
+    })
+    return
+  }
+  pendingDeepLinks.push(link)
+}
+
+/** Focus the window and route the accepted operation through the existing application API. */
+async function dispatchDeepLink(link: DesktopDeepLink): Promise<void> {
+  if (mainWindow === undefined && indexHtml !== undefined) createWindow()
+  mainWindow?.focus()
+  const id = DesktopIpcId(`deep-link:${randomUUID()}`)
+  const envelope = JSON.stringify({
+    type: 'client-request',
+    rpcId: `deep-link:${randomUUID()}`,
+    method: 'workspace/create',
+    payload: { path: link.path },
+  })
+  const response: DesktopFetchResponseMessage = await sendHostFetch(
+    id,
+    `http://${CARRIER_LOOPBACK_HOST}/api/workspace/create`,
+    'POST',
+    { 'content-type': 'application/json' },
+    envelope,
+  )
+  // A refused operation (a path that no longer exists, a locked registry) is
+  // a diagnostic, not a shell failure; the window is already in front.
+  if (response.status !== 200) {
+    console.error(`dsh desktop: deep link dispatch answered ${String(response.status)}`)
+  }
 }

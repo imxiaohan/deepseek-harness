@@ -40,6 +40,20 @@ function runCredentialProbe(ctx) {
   })
 }
 
+/** List the composed workspace registry and record it for the e2e assertion. */
+function runWorkspaceProbe(ctx) {
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined) {
+    record('workspaces-unavailable')
+    return
+  }
+  const workspaces = registry.list().map((workspace) => ({
+    path: workspace.path,
+    title: workspace.title,
+  }))
+  record('workspaces', { detail: JSON.stringify(workspaces) })
+}
+
 export function apply(ctx) {
   const runtime = ctx.get('desktopRuntime')
   if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
@@ -64,6 +78,17 @@ export function apply(ctx) {
       if (existsSync(credentialTriggerPath)) {
         clearInterval(timer)
         runCredentialProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const workspaceTriggerPath = process.env.DSH_DESKTOP_E2E_WORKSPACE_TRIGGER
+  if (workspaceTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(workspaceTriggerPath)) {
+        clearInterval(timer)
+        runWorkspaceProbe(ctx)
       }
     }
     const timer = setInterval(probe, 50)
