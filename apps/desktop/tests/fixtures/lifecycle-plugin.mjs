@@ -14,14 +14,29 @@ function record(type, fields = {}) {
 function runNativePickProbe(ctx) {
   const runtime = ctx.get('desktopRuntime')
   if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
-  if (runtime.pickDirectory === undefined) {
+  if (runtime.nativeRequest === undefined) {
     record('native-pick-unavailable')
     return
   }
-  void runtime.pickDirectory(new AbortController().signal).then((path) => {
+  void runtime.nativeRequest('directory-pick', undefined, new AbortController().signal).then((path) => {
     record('native-pick-resolved', { path })
   }, (error) => {
     record('native-pick-rejected', { detail: String(error) })
+  })
+}
+
+/** Store and resolve one credential through the composed provider and record the outcomes. */
+function runCredentialProbe(ctx) {
+  const credentials = ctx.get('credentials')
+  if (credentials === undefined) throw new Error('desktop e2e fixture has no credentials service')
+  void (async () => {
+    await credentials.set('DSH_E2E_KEY', 'secret-1')
+    const resolved = await credentials.resolve('DSH_E2E_KEY')
+    record('credential-resolved', { detail: JSON.stringify(resolved) })
+    const described = await credentials.describe('DSH_E2E_KEY')
+    record('credential-described', { detail: JSON.stringify(described) })
+  })().catch(error => {
+    record('credential-rejected', { detail: String(error) })
   })
 }
 
@@ -38,6 +53,17 @@ export function apply(ctx) {
       if (existsSync(triggerPath)) {
         clearInterval(timer)
         runNativePickProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const credentialTriggerPath = process.env.DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER
+  if (credentialTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(credentialTriggerPath)) {
+        clearInterval(timer)
+        runCredentialProbe(ctx)
       }
     }
     const timer = setInterval(probe, 50)

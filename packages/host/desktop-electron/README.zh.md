@@ -39,11 +39,11 @@ kind: "package-reference"
 | [`src/virtual-web-server.ts`](src/virtual-web-server.ts) | 替代 HTTP 载体服务的无套接字路由注册表 |
 | [`src/ipc-protocol.ts`](src/ipc-protocol.ts) | 主进程、宿主子进程与 preload 之间的 JSON 线协议 |
 | [`src/host-bridge.ts`](src/host-bridge.ts) | 宿主子进程分发：初始 boot 发布、fetch 往返与流泵送 |
-| [`src/native-host-client.ts`](src/native-host-client.ts) | 宿主子进程原生操作 client：与 Electron 主进程关联的 `pick-directory` 往返 |
+| [`src/native-host-client.ts`](src/native-host-client.ts) | 宿主子进程原生操作 client：与 Electron 主进程关联的原生往返 |
 | [`src/preload-core.ts`](src/preload-core.ts) | 基于注入的 invoke/on/send 原语的渲染侧传输 |
 | [`src/invariant.ts`](src/invariant.ts) | 不变式伴生插件（无运行时不变式；REAL-composition boot 覆盖载体） |
 
-宿主桥安装消息 listener 后发布一次 boot 载荷；主进程收到该载荷之前不会创建加载自定义协议的窗口。两个进程适配器都会校验每条载体消息，并在字段无效时终止所在进程，而不是让 boot、fetch 或 stream 工作持续等待。fetch 与 stream 取消会穿过两段 IPC；宿主桥拥有每个响应体 reader，桥销毁会取消这些 reader 并等待所有活动操作，再让 profile 销毁完成。插件 combo URL 通过 fetch 协议保留完整 pathname 与 query string，并交给虚拟服务器注册的 `/plugins` handler；自定义协议上的 `/api` 请求（包括 Session 导出下载）在 Electron 主进程授权文档后使用共享 API Fetch handler。自定义协议响应体在主进程每次 pull 时推进一个二进制分块，因此进程通道及其两端都不会实体化完整 Session 归档。虚拟 `webServer` 的 `host` getter 返回宿主侧 URL 使用的回环权威，使依赖 bind 的消费者选择其回环分支；`port` 抛错，因为桌面组合不监听任何端口。宿主发起的原生操作沿同一载体反方向行进：`DesktopRuntime.pickDirectory` 向 Electron 主进程发送一条关联的 `pick-directory` 请求，主进程从壳窗口打开 OS 选择器并以 `pick-directory-res` 应答；接缝消费者是 [Electron 目录选择后端](../directory-picker-electron/README.zh.md)。
+宿主桥安装消息 listener 后发布一次 boot 载荷；主进程收到该载荷之前不会创建加载自定义协议的窗口。两个进程适配器都会校验每条载体消息，并在字段无效时终止所在进程，而不是让 boot、fetch 或 stream 工作持续等待。fetch 与 stream 取消会穿过两段 IPC；宿主桥拥有每个响应体 reader，桥销毁会取消这些 reader 并等待所有活动操作，再让 profile 销毁完成。插件 combo URL 通过 fetch 协议保留完整 pathname 与 query string，并交给虚拟服务器注册的 `/plugins` handler；自定义协议上的 `/api` 请求（包括 Session 导出下载）在 Electron 主进程授权文档后使用共享 API Fetch handler。自定义协议响应体在主进程每次 pull 时推进一个二进制分块，因此进程通道及其两端都不会实体化完整 Session 归档。虚拟 `webServer` 的 `host` getter 返回宿主侧 URL 使用的回环权威，使依赖 bind 的消费者选择其回环分支；`port` 抛错，因为桌面组合不监听任何端口。宿主发起的原生操作沿同一载体反方向行进：`DesktopRuntime.nativeRequest` 发送一条携带闭合词表操作及其已验证参数的关联 `native-request`，Electron 主进程执行操作——OS 目录选择器、`safeStorage` 背衬的凭据存储——并以 `native-ok` 或 `native-error` 应答。该通道懒绑定到宿主子进程的进程通道，因此 boot 期消费者在 boot 后载体接线之前即可穿越；[目录选择](../directory-picker-electron/README.zh.md)与[凭据](../../credentials/credentials-electron/README.zh.md) provider 是它的接缝消费者。
 
 <a id="model-experience"></a>
 

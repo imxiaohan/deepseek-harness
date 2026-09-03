@@ -20,8 +20,13 @@ describe('ElectronDirectoryPicker', () => {
 
   it('routes a pick through the desktopRuntime lane and returns its answer', async () => {
     const ctx = new Context()
-    const pickDirectory = vi.fn(async (): Promise<string | null> => '/chosen')
-    ctx.provide('desktopRuntime', { pickDirectory })
+    const nativeRequest = vi.fn(async (): Promise<string | null> => '/chosen')
+    ctx.provide('desktopRuntime', {
+      nativeRequest: async (op: string, _args: undefined, _signal: AbortSignal) => {
+        expect(op).toBe('directory-pick')
+        return nativeRequest()
+      },
+    })
     const fiber = ctx.plugin(ElectronDirectoryPicker)
     await fiber.await()
     const picker = ctx.get('directoryPicker')!
@@ -30,7 +35,7 @@ describe('ElectronDirectoryPicker', () => {
     if (capability.kind === 'native') {
       await expect(capability.pick(new AbortController().signal)).resolves.toBe('/chosen')
     }
-    expect(pickDirectory).toHaveBeenCalledOnce()
+    expect(nativeRequest).toHaveBeenCalledOnce()
     await fiber.dispose()
   })
 

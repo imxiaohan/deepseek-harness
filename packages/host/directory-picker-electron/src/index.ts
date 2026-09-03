@@ -14,7 +14,7 @@ import type { DirectoryPickerCapability } from '@deepseek-ai/dsh-host-directory-
 
 /** The desktop carrier lane this backend reads. */
 interface DesktopRuntimeLane {
-  pickDirectory(signal: AbortSignal): Promise<string | null>
+  nativeRequest(op: 'directory-pick', args: undefined, signal: AbortSignal): Promise<string | null>
 }
 
 /** The `ctx.directoryPicker` Electron-native implementation (stable capability per service life). */
@@ -30,7 +30,7 @@ export default class ElectronDirectoryPicker extends DirectoryPicker {
     if (lane === undefined) {
       throw new Error('directory-picker-electron: the desktop composition exposes no desktopRuntime lane')
     }
-    return lane.pickDirectory(signal)
+    return lane.nativeRequest('directory-pick', undefined, signal)
   }
 
   /**

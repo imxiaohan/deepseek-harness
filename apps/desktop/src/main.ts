@@ -26,6 +26,7 @@ import {
   nativeTheme,
   Notification,
   protocol,
+  safeStorage,
   session,
 } from 'electron/main'
 import { PROCESS_SHUTDOWN_TIMEOUT_MS } from '@deepseek-ai/dsh-app-boot'
@@ -45,6 +46,7 @@ import {
   type DesktopIpcMessage,
 } from '@deepseek-ai/dsh-host-desktop-electron'
 import { desktopNativeCopy, type DesktopFatalStage } from './locale.ts'
+import { createCredentialStore, type CredentialStore } from './credential-store.ts'
 import {
   DESKTOP_WINDOW_THEME_CHANNEL,
   parseDesktopWindowThemeSource,
@@ -64,6 +66,17 @@ function resolveDistRoot(): string {
   const require = createRequire(import.meta.url)
   const manifest = require.resolve('@deepseek-ai/dsh-web-frontend/package.json')
   return join(dirname(manifest), 'dist')
+}
+
+/** The OS-keychain credential store; created once the app data directory is known. */
+let credentials: CredentialStore | undefined
+
+/** The credential store, failing a native request that arrived before readiness. */
+function credentialStore(): CredentialStore {
+  if (credentials === undefined) {
+    throw new Error('dsh desktop: the credential store is not ready yet; retry the operation')
+  }
+  return credentials
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -313,10 +326,10 @@ function handleHostMessage(message: DesktopIpcMessage): void {
       }
       return
     }
-    case 'pick-directory': {
-      void answerPickDirectory(message).catch((cause: unknown) => {
+    case 'native-request': {
+      void answerNativeRequest(message).catch((cause: unknown) => {
         if (quitting) return
-        reportFatal('fatal.host.nativePick', cause)
+        reportFatal('fatal.host.nativeOp', cause)
         quitAfterFatal()
       })
       return
@@ -328,8 +341,82 @@ function handleHostMessage(message: DesktopIpcMessage): void {
   }
 }
 
-/** Show one native directory chooser and relay the operator's pick to the host child. */
-async function answerPickDirectory(message: Extract<DesktopIpcMessage, { t: 'pick-directory' }>): Promise<void> {
+/**
+ * Answer one native request: an operation's own failure (unavailable
+ * encryption, an expired lease) answers as `native-error`, while a structural
+ * failure of the dispatch or the answer channel is fatal (the carrier lane is
+ * broken and the shell reports it through the fatal lane).
+ */
+async function answerNativeRequest(message: Extract<DesktopIpcMessage, { t: 'native-request' }>): Promise<void> {
+  try {
+    const value = await performNativeOp(message)
+    await sendHostMessage({
+      t: 'native-ok',
+      id: message.id,
+      op: message.op,
+      ...value === undefined ? {} : { value },
+      // The dispatch answers typed per-op values it cannot name generically;
+      // the receiving side's parse re-validates the pair.
+    } as Parameters<typeof sendHostMessage>[0])
+  } catch (failure) {
+    if (!(failure instanceof NativeOpFailure)) throw failure
+    await sendHostMessage({ t: 'native-error', id: message.id, op: message.op, error: failure.message })
+  }
+}
+
+/** Run one native operation's main-process half, mapping its failure text. */
+async function performNativeOp(message: Extract<DesktopIpcMessage, { t: 'native-request' }>): Promise<unknown> {
+  try {
+    switch (message.op) {
+      case 'directory-pick':
+        return await pickNativeDirectory()
+      case 'credential-has':
+        return await credentialStore().has(message.args.ref)
+      case 'credential-get':
+        return await credentialStore().get(message.args.ref)
+      case 'credential-set':
+        return await credentialStore().set(message.args.ref, message.args.value)
+      case 'credential-unset':
+        return await credentialStore().unset(message.args.ref)
+      case 'credential-record-status':
+        return await credentialStore().recordStatus(message.args.key)
+      case 'credential-record-read':
+        return await credentialStore().readRecord(message.args.key)
+      case 'credential-record-list':
+        return await credentialStore().listRecords()
+      case 'credential-record-lease':
+        return await credentialStore().leaseRecord(message.args.key)
+      case 'credential-record-commit':
+        return await credentialStore().commitRecord(message.args.key, message.args.lease, message.args.record)
+      case 'credential-record-abort':
+        await credentialStore().abortLease(message.args.lease)
+        return undefined
+      case 'credential-record-delete':
+        return await credentialStore().deleteRecord(message.args.key)
+      default:
+        // parseDesktopIpcMessage admits only the closed op vocabulary, so this
+        // switch is exhaustive; the cast names that for the compiler without
+        // re-narrowing the per-op message shape.
+        return assertNeverOp(message)
+    }
+  } catch (failure) {
+    // An operation's business failure answers the request; only a structural
+    // failure of the answer channel itself is fatal (the catch in
+    // answerNativeRequest's caller).
+    throw new NativeOpFailure(failure instanceof Error ? failure.message : String(failure))
+  }
+}
+
+/** Distinguish an operation failure's answer text from a broken dispatch. */
+class NativeOpFailure extends Error {}
+
+/** The closed-op exhaustiveness guard; the parser cannot produce its input. */
+function assertNeverOp(op: never): never {
+  throw new Error(`dsh desktop: unknown native op ${String(op)}`)
+}
+
+/** Show one native directory chooser and return the operator's pick. */
+async function pickNativeDirectory(): Promise<string | null> {
   const window = mainWindow
   const options: Electron.OpenDialogOptions = {
     title: nativeCopy().directoryPickerTitle,
@@ -338,8 +425,7 @@ async function answerPickDirectory(message: Extract<DesktopIpcMessage, { t: 'pic
   const result = window === undefined || window.isDestroyed() || window.webContents.isDestroyed()
     ? await dialog.showOpenDialog(options)
     : await dialog.showOpenDialog(window, options)
-  const path = result.canceled ? null : result.filePaths[0] ?? null
-  await sendHostMessage({ t: 'pick-directory-res', id: message.id, path })
+  return result.canceled ? null : result.filePaths[0] ?? null
 }
 
 /** Create the window over the privileged scheme (or a host-announced URL in Web-profile mode). */
@@ -413,7 +499,7 @@ function createWindow(url?: string): void {
 /** Boot the profile in the host child and open the window once it is ready. */
 function bootShell(): void {
   host = spawn(process.execPath, [HOST_ENTRY], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_HOST_CHILD: '1' },
     stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
   })
   let announced = ''
@@ -491,6 +577,10 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    credentials = createCredentialStore({
+      filename: join(app.getPath('userData'), 'credentials.json'),
+      crypto: safeStorage,
+    })
     session.defaultSession.webRequest.onBeforeRequest({
       urls: [`${APP_SCHEME}://app/api/*`, `${APP_SCHEME}://app/plugins/*`],
     }, (details, callback) => {

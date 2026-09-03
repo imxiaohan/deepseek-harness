@@ -26,6 +26,7 @@ interface RunningDesktop {
   readonly eventsPath: string
   readonly page: Page
   readonly pickTrigger?: string
+  readonly credentialTrigger?: string
   readonly root: string
   readonly userData: string
   readonly output: { stderr: string; stdout: string }
@@ -45,6 +46,7 @@ afterEach(async () => {
 async function launchDesktop(options: {
   readonly blockDisposeMs?: number
   readonly pickTriggerPath?: string
+  readonly credentialTriggerPath?: string
 } = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
@@ -69,6 +71,7 @@ async function launchDesktop(options: {
     ...inheritedEnv,
     DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS: String(options.blockDisposeMs ?? 0),
     ...options.pickTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_PICK_TRIGGER: options.pickTriggerPath },
+    ...options.credentialTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER: options.credentialTriggerPath },
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -95,6 +98,7 @@ async function launchDesktop(options: {
     eventsPath,
     page,
     ...options.pickTriggerPath === undefined ? {} : { pickTrigger: options.pickTriggerPath },
+    ...options.credentialTriggerPath === undefined ? {} : { credentialTrigger: options.credentialTriggerPath },
     root,
     userData,
     output,
@@ -262,6 +266,31 @@ describe('the built Electron desktop application', () => {
     const resolved = (await fixtureEvents(fixture)).find(event => event.type === 'native-pick-resolved')
     expect(resolved).toBeDefined()
     expect((resolved as { path?: unknown }).path).toBe(chosen)
+    await rm(triggerDir, { recursive: true, force: true })
+  })
+
+  it('stores and resolves a credential through the OS-keychain store', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'credential-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ credentialTriggerPath: trigger })
+    const { app } = fixture
+    expect(fixture.credentialTrigger).toBe(trigger)
+    // The OS keychain is not drivable from CI; stand in with an identity face
+    // that keeps the safeStorage contract, so the host→main→host store round
+    // trips run against the real main-process document.
+    await suppressFatalUi(app)
+    await app.evaluate(({ safeStorage }) => {
+      safeStorage.isEncryptionAvailable = () => true
+      safeStorage.encryptString = (plain: string) => Buffer.from(plain, 'utf8')
+      safeStorage.decryptString = (encrypted: Buffer) => encrypted.toString('utf8')
+    })
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'credential-resolved')
+    const events = await fixtureEvents(fixture)
+    const resolved = events.find(event => event.type === 'credential-resolved') as { detail?: string }
+    expect(JSON.parse(resolved.detail ?? 'null')).toEqual({ value: 'secret-1', source: 'keychain' })
+    const described = events.find(event => event.type === 'credential-described') as { detail?: string }
+    expect(JSON.parse(described.detail ?? 'null')).toEqual({ configured: true, source: 'keychain', writable: true })
     await rm(triggerDir, { recursive: true, force: true })
   })
 

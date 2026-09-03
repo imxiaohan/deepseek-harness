@@ -158,23 +158,37 @@ function decodeCookie(value: string, secret: Buffer): BrowserCookiePayload | und
   return decoded as unknown as BrowserCookiePayload
 }
 
-async function initializeSecret(credentials: CredentialProvider): Promise<Buffer> {
+async function initializeSecret(
+  credentials: CredentialProvider,
+  onDegraded: (error: unknown) => void,
+): Promise<Buffer> {
   const generated: StoredSecretPayload = {
     version: STORED_SECRET_VERSION,
     secret: encodeBase64Url(randomBytes(SECRET_BYTES)),
   }
-  const record = await credentials.modifyRecord(AUTH_RECORD_KEY, (current) => {
-    if (current !== undefined) {
-      storedSecret(current)
-      return Promise.resolve(undefined)
+  try {
+    const record = await credentials.modifyRecord(AUTH_RECORD_KEY, (current) => {
+      if (current !== undefined) {
+        storedSecret(current)
+        return Promise.resolve(undefined)
+      }
+      return Promise.resolve({ kind: 'grant', payload: generated })
+    })
+    const secret = storedSecret(record)
+    if (secret === undefined) {
+      throw new Error('client-connection: browser-session credential record was not created')
     }
-    return Promise.resolve({ kind: 'grant', payload: generated })
-  })
-  const secret = storedSecret(record)
-  if (secret === undefined) {
-    throw new Error('client-connection: browser-session credential record was not created')
+    return secret
+  } catch (error) {
+    // A credential store that cannot serve its record — an OS keychain that is
+    // unavailable, a document this boot cannot decrypt — must not brick boot.
+    // This launch signs with the generated secret instead: sessions live for
+    // the process lifetime and re-authenticate on the next restart.
+    onDegraded(error)
+    const secret = canonicalSecret(generated.secret)
+    if (secret === undefined) throw new Error('client-connection: generated an invalid fallback secret')
+    return secret
   }
-  return secret
 }
 
 /**
@@ -205,14 +219,17 @@ export class BrowserAuth {
    * @param processOwner - root application context retaining one token across Connection reloads.
    * @param credentials - persistent credential provider for the Web profile.
    * @param maxAgeDays - positive absolute browser-cookie lifetime in days.
+   * @param onDegraded - reports a store failure that degraded this launch to a
+   * process-lifetime secret instead of failing activation.
    * @returns initialized authentication owner with the process owner's launch token.
    */
   static async create(
     processOwner: object,
     credentials: CredentialProvider,
     maxAgeDays: number,
+    onDegraded: (error: unknown) => void = () => {},
   ): Promise<BrowserAuth> {
-    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays)
+    return new BrowserAuth(processOwner, await initializeSecret(credentials, onDegraded), maxAgeDays)
   }
 
   /**

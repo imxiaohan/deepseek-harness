@@ -55,8 +55,9 @@ function createAuth(
   store: RecordCredentials,
   maxAgeDays = 30,
   processOwner: object = {},
+  onDegraded: (error: unknown) => void = () => {},
 ): Promise<BrowserAuth> {
-  return BrowserAuth.create(processOwner, credentials(store), maxAgeDays)
+  return BrowserAuth.create(processOwner, credentials(store), maxAgeDays, onDegraded)
 }
 
 function request(url: string, authority = '127.0.0.1:3080', init?: {
@@ -227,22 +228,30 @@ describe('BrowserAuth', () => {
     expect(store).toMatchObject({ reads: 0, modifies: 2 })
   })
 
-  it('fails loud on an invalid owner record instead of replacing it', async () => {
+  it('degrades to a launch-lifetime secret when the owner record cannot be served', async () => {
+    const degraded: unknown[] = []
+    const onDegraded = (error: unknown): void => { degraded.push(error) }
+
     const unsupported = new RecordCredentials()
     unsupported.record = { kind: 'api-key', key: 'not-a-cookie-secret' }
-    await expect(createAuth(unsupported)).rejects.toThrow(/unsupported format/u)
+    await expect(createAuth(unsupported, undefined, undefined, onDegraded)).resolves.toBeInstanceOf(BrowserAuth)
 
     const malformed = new RecordCredentials()
     malformed.record = { kind: 'grant', payload: { version: 1, secret: 'short' } }
-    await expect(createAuth(malformed)).rejects.toThrow(/invalid secret/u)
+    await expect(createAuth(malformed, undefined, undefined, onDegraded)).resolves.toBeInstanceOf(BrowserAuth)
 
     const nonString = new RecordCredentials()
     nonString.record = { kind: 'grant', payload: { version: 1, secret: 42 } }
-    await expect(createAuth(nonString)).rejects.toThrow(/invalid secret/u)
+    await expect(createAuth(nonString, undefined, undefined, onDegraded)).resolves.toBeInstanceOf(BrowserAuth)
 
     const discarded = new RecordCredentials()
     discarded.discardWrites = true
-    await expect(createAuth(discarded)).rejects.toThrow(/was not created/u)
+    await expect(createAuth(discarded, undefined, undefined, onDegraded)).resolves.toBeInstanceOf(BrowserAuth)
+
+    // Every unservable store reported exactly one degradation, and none of
+    // them is silently swallowed.
+    expect(degraded).toHaveLength(4)
+    expect(degraded[0]).toBeInstanceOf(Error)
 
     await expect(createAuth(new RecordCredentials(), Number.MAX_SAFE_INTEGER))
       .rejects.toThrow(/safe timestamp range/u)

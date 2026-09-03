@@ -81,6 +81,12 @@
     - id: directory-picker-surface
       name: '@deepseek-ai/dsh-client-ui-directory-picker-native'
 
+    # The managed credential store behind the same seam: the Electron main
+    # process's OS-keychain document (safeStorage), reached over the IPC
+    # carrier. The base row's environment and `.env` layers are unchanged.
+    - id: credentials-electron
+      name: '@deepseek-ai/dsh-credentials-electron'
+
     # Read-only projection of current Loader entries for trusted client RPCs.
     - id: plugin-inventory
       name: '@deepseek-ai/dsh-host-plugin-inventory'
@@ -253,6 +259,13 @@
 
     - id: ui-trajectory
       name: '@deepseek-ai/dsh-client-ui-trajectory'
+
+# The file-backed credential store stays a base capability (the TUI and the
+# Web surface keep it); the desktop surface swaps the same seam to the
+# OS-keychain row above, so the base row must not register a second
+# `ctx.credentials` service under the desktop composition.
+- id: credentials
+  disabled: true
 
 # ── the agent plane moves behind agent presets ─────────────────────────────
 #
