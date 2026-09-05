@@ -30,6 +30,11 @@ import {
   session,
 } from 'electron/main'
 import { PROCESS_SHUTDOWN_TIMEOUT_MS } from '@deepseek-ai/dsh-app-boot'
+import {
+  REMOTE_EVENT_STREAM_ENDPOINT,
+  REMOTE_EVENT_STREAM_PAYLOAD,
+  REMOTE_EVENT_RESULT_ENDPOINT,
+} from '@deepseek-ai/dsh-api-gateway'
 import { renderIndexInjections } from '@deepseek-ai/dsh-host-webserver'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
@@ -53,6 +58,7 @@ import {
   parseDesktopDeepLink,
   type DesktopDeepLink,
 } from './deep-link.ts'
+import { PendingNotificationHub } from './pending-notifications.ts'
 import {
   DESKTOP_WINDOW_THEME_CHANNEL,
   parseDesktopWindowThemeSource,
@@ -319,6 +325,16 @@ function handleHostMessage(message: DesktopIpcMessage): void {
     case 'stream-item':
     case 'stream-end':
     case 'stream-error': {
+      if (mainEventsStream === message.id) {
+        if (message.t === 'stream-item') pendingHub?.handleFrame(message.value)
+        else {
+          // The forwarded-event stream ended: collapse what it presented and
+          // release ownership so a later boot can open a fresh generation.
+          mainEventsStream = undefined
+          pendingHub?.dispose()
+        }
+        return
+      }
       if (!rendererStreams.has(message.id)) return
       if (message.t !== 'stream-item') rendererStreams.delete(message.id)
       const window = mainWindow
@@ -564,6 +580,91 @@ function bootShell(): void {
     }
     const coldLink = extractDesktopDeepLinkArgv(process.argv)
     if (coldLink !== undefined) enqueueDeepLink(coldLink)
+    openPendingNotifications()
+  })
+}
+
+/** The notification answerer over the Gateway's forwarded-event stream. */
+let pendingHub: PendingNotificationHub | undefined
+
+/** The main-owned `$events` logical stream id, while the stream is open. */
+let mainEventsStream: DesktopIpcId | undefined
+
+/** Bring the application window forward. */
+function focusApplicationWindow(): void {
+  if (mainWindow === undefined && indexHtml !== undefined) createWindow()
+  mainWindow?.focus()
+}
+
+/** Build the hub over Electron notifications and the carrier's answer RPC. */
+function createPendingHub(): PendingNotificationHub {
+  const copy = nativeCopy()
+  return new PendingNotificationHub({
+    notifier: {
+      show: (spec, events) => {
+        // Unsupported sessions degrade to no notifications rather than a
+        // constructor failure; the window keeps answering everything.
+        if (!Notification.isSupported()) {
+          return { close: () => {} }
+        }
+        const notification = new Notification({
+          title: spec.title,
+          body: spec.body,
+          actions: spec.actions.map(text => ({ type: 'button', text })),
+        })
+        notification.on('action', (_event, index) => { events.onAnswer(index) })
+        notification.on('click', () => { events.onFocus() })
+        notification.on('close', () => { events.onDismissed() })
+        notification.show()
+        return { close: () => { notification.close() } }
+      },
+    },
+    poster: {
+      post: async (result) => {
+        const id = DesktopIpcId(`ntv-answer:${randomUUID()}`)
+        const envelope = JSON.stringify({
+          type: 'client-request',
+          rpcId: `ntv-answer:${randomUUID()}`,
+          method: REMOTE_EVENT_RESULT_ENDPOINT,
+          payload: result,
+        })
+        const response = await sendHostFetch(
+          id,
+          `http://${CARRIER_LOOPBACK_HOST}${REMOTE_EVENT_RESULT_ENDPOINT}`,
+          'POST',
+          { 'content-type': 'application/json' },
+          envelope,
+        )
+        return response.status
+      },
+    },
+    logger: { warn: (text) => { console.warn(text) } },
+    copy: {
+      approvalTitle: copy.approvalTitle,
+      allow: copy.allow,
+      deny: copy.deny,
+      questionTitle: copy.questionTitle,
+    },
+    focus: focusApplicationWindow,
+  })
+}
+
+/** Open the forwarded-event stream this shell answers notifications from. */
+function openPendingNotifications(): void {
+  pendingHub ??= createPendingHub()
+  void (async () => {
+    const id = DesktopIpcId(`ntv-events:${randomUUID()}`)
+    await sendHostMessage({
+      t: 'open-stream',
+      id,
+      endpoint: REMOTE_EVENT_STREAM_ENDPOINT,
+      payload: REMOTE_EVENT_STREAM_PAYLOAD,
+    })
+    mainEventsStream = id
+  })().catch((cause: unknown) => {
+    if (quitting) return
+    reportFatal('fatal.host.eventStream', cause)
+    quitAfterFatal()
   })
 }
 

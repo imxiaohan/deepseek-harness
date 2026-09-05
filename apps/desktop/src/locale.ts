@@ -4,6 +4,10 @@ const zh = {
   applicationTitle: 'DeepSeek Harness',
   fatalPrefix: 'dsh desktop',
   directoryPickerTitle: '选择工作区目录',
+  approvalTitle: '等待审批',
+  allow: '允许',
+  deny: '拒绝',
+  questionTitle: '等待回答',
   fatalStages: {
     'fatal.renderer.invalidFetch': 'renderer 发送了非法 fetch 消息',
     'fatal.renderer.invalidFetchCancellation': 'renderer 发送了非法 fetch 取消消息',
@@ -16,6 +20,7 @@ const zh = {
     'fatal.host.invalidCarrierMessage': '宿主进程发送了非法载体消息',
     'fatal.host.nativeOp': '原生操作失败',
     'fatal.host.deepLink': '深链分发失败',
+    'fatal.host.eventStream': '事件流打开失败',
     'fatal.host.processExited': '宿主进程已退出',
     'fatal.host.startFailed': '宿主进程启动失败',
   },
@@ -31,6 +36,11 @@ export interface DesktopNativeCopy {
   readonly applicationTitle: string
   /** Localized title for the native workspace-directory chooser. */
   readonly directoryPickerTitle: string
+  /** Localized copy for pending-interaction notifications. */
+  readonly approvalTitle: string
+  readonly allow: string
+  readonly deny: string
+  readonly questionTitle: string
   readonly fatalPrefix: string
   readonly fatalStages: Record<DesktopFatalStage, string>
   /**
@@ -52,6 +62,10 @@ const en = {
   applicationTitle: 'DeepSeek Harness',
   fatalPrefix: 'dsh desktop',
   directoryPickerTitle: 'Choose a workspace directory',
+  approvalTitle: 'Approval requested',
+  allow: 'Allow',
+  deny: 'Deny',
+  questionTitle: 'Question waiting',
   fatalStages: {
     'fatal.renderer.invalidFetch': 'renderer sent an invalid fetch message',
     'fatal.renderer.invalidFetchCancellation': 'renderer sent an invalid fetch cancellation message',
@@ -64,6 +78,7 @@ const en = {
     'fatal.host.invalidCarrierMessage': 'host process sent an invalid carrier message',
     'fatal.host.nativeOp': 'native operation failed',
     'fatal.host.deepLink': 'deep link dispatch failed',
+    'fatal.host.eventStream': 'event stream failed to open',
     'fatal.host.processExited': 'host process exited',
     'fatal.host.startFailed': 'host process failed to start',
   },

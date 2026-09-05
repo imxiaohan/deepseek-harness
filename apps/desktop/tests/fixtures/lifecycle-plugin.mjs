@@ -54,6 +54,41 @@ function runWorkspaceProbe(ctx) {
   record('workspaces', { detail: JSON.stringify(workspaces) })
 }
 
+/** Create one agent, open its turn, and ask one real approval through the seam. */
+function runApprovalProbe(ctx) {
+  const agents = ctx.get('agents')
+  if (agents === undefined) {
+    record('approval-unavailable')
+    return
+  }
+  void (async () => {
+    let agentCtx = undefined
+    const handle = await agents.create({
+      sessionId: 'desktop-e2e-approval',
+      meta: { cwd: process.cwd() },
+      setup: async (prepared) => {
+        agentCtx = prepared
+      },
+    })
+    try {
+      if (agentCtx === undefined || agentCtx.agent === undefined) {
+        throw new Error('desktop e2e fixture could not reach the prepared agent')
+      }
+      await agentCtx.session.append('turn/start', { turn: 1 })
+      const outcome = await agentCtx.approval.request({
+        agent: agentCtx.agent,
+        toolName: 'desktop-e2e',
+        reason: 'notification answer probe',
+      })
+      record('approval-outcome', { detail: outcome })
+    } catch (error) {
+      record('approval-rejected', { detail: String(error) })
+    } finally {
+      await handle.dispose()
+    }
+  })()
+}
+
 export function apply(ctx) {
   const runtime = ctx.get('desktopRuntime')
   if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
@@ -89,6 +124,17 @@ export function apply(ctx) {
       if (existsSync(workspaceTriggerPath)) {
         clearInterval(timer)
         runWorkspaceProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const approvalTriggerPath = process.env.DSH_DESKTOP_E2E_APPROVAL_TRIGGER
+  if (approvalTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(approvalTriggerPath)) {
+        clearInterval(timer)
+        runApprovalProbe(ctx)
       }
     }
     const timer = setInterval(probe, 50)

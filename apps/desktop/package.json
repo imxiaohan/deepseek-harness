@@ -23,6 +23,7 @@
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/dsh-app-boot": "workspace:^",
+    "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-atomic-write": "workspace:^",
     "@deepseek-ai/dsh-base": "workspace:^",
     "@deepseek-ai/dsh-desktop-app": "workspace:^",

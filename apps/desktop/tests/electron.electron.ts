@@ -29,6 +29,7 @@ interface RunningDesktop {
   readonly pickTrigger?: string
   readonly credentialTrigger?: string
   readonly workspaceTrigger?: string
+  readonly approvalTrigger?: string
   readonly root: string
   readonly userData: string
   readonly output: { stderr: string; stdout: string }
@@ -50,6 +51,7 @@ async function launchDesktop(options: {
   readonly pickTriggerPath?: string
   readonly credentialTriggerPath?: string
   readonly workspaceTriggerPath?: string
+  readonly approvalTriggerPath?: string
 } = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
@@ -76,6 +78,7 @@ async function launchDesktop(options: {
     ...options.pickTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_PICK_TRIGGER: options.pickTriggerPath },
     ...options.credentialTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER: options.credentialTriggerPath },
     ...options.workspaceTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_WORKSPACE_TRIGGER: options.workspaceTriggerPath },
+    ...options.approvalTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_APPROVAL_TRIGGER: options.approvalTriggerPath },
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -104,6 +107,7 @@ async function launchDesktop(options: {
     ...options.pickTriggerPath === undefined ? {} : { pickTrigger: options.pickTriggerPath },
     ...options.credentialTriggerPath === undefined ? {} : { credentialTrigger: options.credentialTriggerPath },
     ...options.workspaceTriggerPath === undefined ? {} : { workspaceTrigger: options.workspaceTriggerPath },
+    ...options.approvalTriggerPath === undefined ? {} : { approvalTrigger: options.approvalTriggerPath },
     root,
     userData,
     output,
@@ -322,6 +326,42 @@ describe('the built Electron desktop application', () => {
     expect(workspaces[0]!.path.startsWith(realpathSync(target))).toBe(true)
     await rm(triggerDir, { recursive: true, force: true })
     await rm(target, { recursive: true, force: true })
+  })
+
+  it('answers a real approval waterfall from a system notification', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'approval-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ approvalTriggerPath: trigger })
+    const { app } = fixture
+    await suppressFatalUi(app)
+    // The OS notification surface is not drivable from CI; capture what main
+    // presents by stubbing show, then drive the captured instance's events.
+    await app.evaluate(({ Notification }) => {
+      const shown: Electron.Notification[] = []
+      ;(globalThis as typeof globalThis & { __dshE2ENotifications?: Electron.Notification[] })
+        .__dshE2ENotifications = shown
+      Notification.prototype.show = function (this: Electron.Notification) {
+        shown.push(this)
+        return true
+      }
+    })
+    await writeFile(trigger, '')
+    await expect.poll(async () => await app.evaluate(() => (
+      (globalThis as typeof globalThis & { __dshE2ENotifications?: unknown[] })
+        .__dshE2ENotifications?.length ?? 0
+    )), { timeout: 30_000 }).toBeGreaterThan(0)
+    const first = (await app.evaluate(() => (
+      (globalThis as typeof globalThis & { __dshE2ENotifications?: Electron.Notification[] })
+        .__dshE2ENotifications ?? []
+    )))[0]!
+    expect(first.title).toBe('Approval requested')
+    await app.evaluate((_electron, notification) => {
+      notification.emit('action', {}, 0)
+    }, first)
+    await waitForEvent(fixture, 'approval-outcome')
+    const outcome = (await fixtureEvents(fixture)).find(event => event.type === 'approval-outcome')
+    expect((outcome as { detail?: unknown }).detail).toBe('allowed-once')
+    await rm(triggerDir, { recursive: true, force: true })
   })
 
   it('enforces authority, survives reload, rejects a second instance, and quits cleanly', async () => {
