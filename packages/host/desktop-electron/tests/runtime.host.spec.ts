@@ -103,4 +103,49 @@ describe('DesktopRuntime', () => {
       injections: [{ kind: 'global', name: '__BOOT__', value: { ready: true } }],
     })
   })
+
+  it('routes a native operation through the host-child IPC channel', async () => {
+    const current = context()
+    const runtime = new DesktopRuntime(current)
+    const previousEnv = process.env.DSH_DESKTOP_HOST_CHILD
+    const previousSend = process.send?.bind(process)
+    const sent: unknown[] = []
+    process.env.DSH_DESKTOP_HOST_CHILD = '1'
+    Object.defineProperty(process, 'send', {
+      value: (message: unknown) => {
+        sent.push(message)
+        return true
+      },
+      writable: true,
+      configurable: true,
+    })
+    const emitInbound = (value: unknown): void => {
+      void (process.emit as unknown as (event: string, payload: unknown) => unknown)('message', value)
+    }
+    try {
+      const waited = runtime.nativeRequest('directory-pick', undefined, new AbortController().signal)
+      await new Promise(resolve => setImmediate(resolve))
+      const request = sent[0] as { t: string; id: string }
+      expect(request.t).toBe('native-request')
+      emitInbound({ t: 'native-ok', id: request.id, op: 'directory-pick', value: '/chosen' })
+      await expect(waited).resolves.toBe('/chosen')
+    } finally {
+      if (previousEnv === undefined) delete process.env.DSH_DESKTOP_HOST_CHILD
+      else process.env.DSH_DESKTOP_HOST_CHILD = previousEnv
+      Object.defineProperty(process, 'send', { value: previousSend, writable: true, configurable: true })
+    }
+  })
+
+  it('fails loud outside the desktop host child', async () => {
+    const current = context()
+    const runtime = new DesktopRuntime(current)
+    const previousEnv = process.env.DSH_DESKTOP_HOST_CHILD
+    delete process.env.DSH_DESKTOP_HOST_CHILD
+    try {
+      expect(() => runtime.nativeRequest('directory-pick', undefined, new AbortController().signal))
+        .toThrow('no native host lane is bound')
+    } finally {
+      if (previousEnv !== undefined) process.env.DSH_DESKTOP_HOST_CHILD = previousEnv
+    }
+  })
 })

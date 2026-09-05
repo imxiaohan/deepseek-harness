@@ -13,6 +13,11 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import z from '@deepseek-ai/schemastery'
 export type { TypertGatewayFaultDetails } from './remote-error-codes.ts'
+export {
+  REMOTE_EVENT_STREAM_ENDPOINT,
+  REMOTE_EVENT_STREAM_PAYLOAD,
+  REMOTE_EVENT_RESULT_ENDPOINT,
+} from './stream-protocol.ts'
 import {
   RemoteError,
   remoteErrorOf,

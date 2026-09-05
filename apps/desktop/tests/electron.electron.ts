@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -25,6 +26,10 @@ interface RunningDesktop {
   readonly env: Record<string, string>
   readonly eventsPath: string
   readonly page: Page
+  readonly pickTrigger?: string
+  readonly credentialTrigger?: string
+  readonly workspaceTrigger?: string
+  readonly approvalTrigger?: string
   readonly root: string
   readonly userData: string
   readonly output: { stderr: string; stdout: string }
@@ -41,7 +46,13 @@ afterEach(async () => {
 })
 
 /** Launch the built app with an isolated profile and a socket-listen guard in its host child. */
-async function launchDesktop(options: { readonly blockDisposeMs?: number } = {}): Promise<RunningDesktop> {
+async function launchDesktop(options: {
+  readonly blockDisposeMs?: number
+  readonly pickTriggerPath?: string
+  readonly credentialTriggerPath?: string
+  readonly workspaceTriggerPath?: string
+  readonly approvalTriggerPath?: string
+} = {}): Promise<RunningDesktop> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-desktop-electron-'))
   const home = join(root, 'home')
   const userData = join(root, 'electron')
@@ -64,6 +75,10 @@ async function launchDesktop(options: { readonly blockDisposeMs?: number } = {})
   const env: Record<string, string> = {
     ...inheritedEnv,
     DSH_DESKTOP_E2E_BLOCK_DISPOSE_MS: String(options.blockDisposeMs ?? 0),
+    ...options.pickTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_PICK_TRIGGER: options.pickTriggerPath },
+    ...options.credentialTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER: options.credentialTriggerPath },
+    ...options.workspaceTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_WORKSPACE_TRIGGER: options.workspaceTriggerPath },
+    ...options.approvalTriggerPath === undefined ? {} : { DSH_DESKTOP_E2E_APPROVAL_TRIGGER: options.approvalTriggerPath },
     DSH_DESKTOP_E2E_EVENTS: eventsPath,
     DSH_DESKTOP_E2E_FORBID_LISTEN: '1',
     DSH_DESKTOP_INVOCATION: JSON.stringify({ version: 0, patchFiles: [overlay], args: [] }),
@@ -84,7 +99,19 @@ async function launchDesktop(options: { readonly blockDisposeMs?: number } = {})
   await page.waitForFunction(() => (
     globalThis as typeof globalThis & { __DSH_TRANSPORT__?: { ownsHost?: unknown } }
   ).__DSH_TRANSPORT__?.ownsHost === true)
-  const fixture = { app, env, eventsPath, page, root, userData, output }
+  const fixture = {
+    app,
+    env,
+    eventsPath,
+    page,
+    ...options.pickTriggerPath === undefined ? {} : { pickTrigger: options.pickTriggerPath },
+    ...options.credentialTriggerPath === undefined ? {} : { credentialTrigger: options.credentialTriggerPath },
+    ...options.workspaceTriggerPath === undefined ? {} : { workspaceTrigger: options.workspaceTriggerPath },
+    ...options.approvalTriggerPath === undefined ? {} : { approvalTrigger: options.approvalTriggerPath },
+    root,
+    userData,
+    output,
+  } as RunningDesktop
   running.add(fixture)
   await waitForEvent(fixture, 'fixture-ready')
   return fixture
@@ -129,7 +156,9 @@ function processIsAlive(pid: number): boolean {
 async function suppressFatalUi(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ dialog, Notification }) => {
     dialog.showErrorBox = () => {}
-    Notification.isSupported = () => false
+    // The prototype stub keeps fatal-condition notifications silent without
+    // lying about support: notification-backed features keep working.
+    Notification.prototype.show = function () { return true }
   })
 }
 
@@ -228,6 +257,139 @@ describe('the built Electron desktop application', () => {
     await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('dark')
     await dialog.getByRole('button', { name: 'System', exact: true }).click()
     await expect.poll(nativeThemeSource, { timeout: 5_000 }).toBe('system')
+  })
+
+  it('routes a native directory pick through main and back to the host', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'dir-pick-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ pickTriggerPath: trigger })
+    const { app } = fixture
+    expect(fixture.pickTrigger).toBe(trigger)
+    // The OS chooser cannot be driven by Playwright; stub the main-process
+    // dialog so the host→main→host round trip is exercised with a fixed path.
+    const chosen = '/home/test/workspace'
+    await suppressFatalUi(app)
+    await app.evaluate(({ dialog }, selected) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] })
+    }, chosen)
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'native-pick-resolved')
+    const resolved = (await fixtureEvents(fixture)).find(event => event.type === 'native-pick-resolved')
+    expect(resolved).toBeDefined()
+    expect((resolved as { path?: unknown }).path).toBe(chosen)
+    await rm(triggerDir, { recursive: true, force: true })
+  })
+
+  it('stores and resolves a credential through the OS-keychain store', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'credential-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ credentialTriggerPath: trigger })
+    const { app } = fixture
+    expect(fixture.credentialTrigger).toBe(trigger)
+    // The OS keychain is not drivable from CI; stand in with an identity face
+    // that keeps the safeStorage contract, so the host→main→host store round
+    // trips run against the real main-process document.
+    await suppressFatalUi(app)
+    await app.evaluate(({ safeStorage }) => {
+      safeStorage.isEncryptionAvailable = () => true
+      safeStorage.encryptString = (plain: string) => Buffer.from(plain, 'utf8')
+      safeStorage.decryptString = (encrypted: Buffer) => encrypted.toString('utf8')
+    })
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'credential-resolved')
+    const events = await fixtureEvents(fixture)
+    const resolved = events.find(event => event.type === 'credential-resolved') as { detail?: string }
+    expect(JSON.parse(resolved.detail ?? 'null')).toEqual({ value: 'secret-1', source: 'keychain' })
+    const described = events.find(event => event.type === 'credential-described') as { detail?: string }
+    expect(JSON.parse(described.detail ?? 'null')).toEqual({ configured: true, source: 'keychain', writable: true })
+    await rm(triggerDir, { recursive: true, force: true })
+  })
+
+  it('adopts a workspace from a warm deep link before any host API sees an unvalidated input', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'workspace-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const target = await mkdtemp(join(tmpdir(), 'dsh-deep-link-target-'))
+    const fixture = await launchDesktop({ workspaceTriggerPath: trigger })
+    const { app } = fixture
+    await suppressFatalUi(app)
+    // A second instance carrying the link exercises the warm ingress: the
+    // single-instance lock hands the argv to the running app and exits.
+    // A plain spawn, not a second Playwright instance: the lock-refused
+    // process exits before Playwright could attach, and its exit IS the
+    // hand-off — the running instance answers the single-instance event.
+    const second = spawn(electronExecutable, [
+      '--lang=en-US',
+      `--user-data-dir=${fixture.userData}`,
+      DESKTOP_DIR,
+      `dsh://open?path=${encodeURIComponent(target)}`,
+    ], { env: { ...fixture.env, DSH_DESKTOP_E2E_EVENTS: join(triggerDir, 'second-events.jsonl') } })
+    const exit = await processExit(second)
+    expect(exit.code).toBe(1)
+    await writeFile(trigger, '')
+    await waitForEvent(fixture, 'workspaces')
+    const recorded = (await fixtureEvents(fixture)).find(event => event.type === 'workspaces') as { detail?: string }
+    const workspaces = JSON.parse(recorded.detail ?? '[]') as Array<{ path: string; title: string }>
+    expect(workspaces).toHaveLength(1)
+    expect(workspaces[0]!.path.startsWith(realpathSync(target))).toBe(true)
+    await rm(triggerDir, { recursive: true, force: true })
+    await rm(target, { recursive: true, force: true })
+  })
+
+  it('answers a real approval waterfall from a system notification', async () => {
+    const triggerDir = await mkdtemp(join(tmpdir(), 'approval-trigger-'))
+    const trigger = join(triggerDir, 'trigger')
+    const fixture = await launchDesktop({ approvalTriggerPath: trigger })
+    const { app } = fixture
+    await suppressFatalUi(app)
+    // The OS notification surface is not drivable from CI; capture what main
+    // presents by stubbing show, then drive the captured instance's events.
+    await app.evaluate(({ Notification }) => {
+      const shown: Array<{
+        instance: Electron.Notification
+        handlers: Map<string, Array<(...args: unknown[]) => void>>
+      }> = []
+      ;(globalThis as typeof globalThis & { __dshE2ENotifications?: typeof shown })
+        .__dshE2ENotifications = shown
+      const handlersOf = (instance: Electron.Notification) => {
+        const existing = shown.find(entry => entry.instance === instance)
+        if (existing !== undefined) return existing.handlers
+        const handlers = new Map<string, Array<(...args: unknown[]) => void>>()
+        shown.push({ instance, handlers })
+        return handlers
+      }
+      const captureOn = (
+        event: string,
+        handler: (...args: unknown[]) => void,
+      ) => {
+        const list = handlersOf(this as unknown as Electron.Notification).get(event) ?? []
+        list.push(handler)
+        handlersOf(this as unknown as Electron.Notification).set(event, list)
+        return this
+      }
+      Notification.prototype.on = captureOn as unknown as typeof Notification.prototype.on
+      Notification.prototype.show = function (this: Electron.Notification) {
+        handlersOf(this)
+        return true
+      }
+    })
+    await writeFile(trigger, '')
+    await expect.poll(async () => await app.evaluate(() => (
+      (globalThis as typeof globalThis & { __dshE2ENotifications?: unknown[] })
+        .__dshE2ENotifications?.length ?? 0
+    )), { timeout: 30_000 }).toBeGreaterThan(0)
+    // Electron's Notification exposes no emit and Playwright's channel does
+    // not carry the captured handlers, so drive the first captured action
+    // handler inside main, exactly as a native activation would deliver it.
+    await app.evaluate(() => {
+      const entries = (globalThis as typeof globalThis & {
+        __dshE2ENotifications?: Array<{ handlers: Map<string, Array<(...args: unknown[]) => void>> }>
+      }).__dshE2ENotifications ?? []
+      entries[0]!.handlers.get('action')![0]!({}, 0)
+    })
+    await waitForEvent(fixture, 'approval-outcome')
+    const outcome = (await fixtureEvents(fixture)).find(event => event.type === 'approval-outcome')
+    expect((outcome as { detail?: unknown }).detail).toBe('allowed-once')
+    await rm(triggerDir, { recursive: true, force: true })
   })
 
   it('enforces authority, survives reload, rejects a second instance, and quits cleanly', async () => {

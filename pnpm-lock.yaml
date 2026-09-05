@@ -472,9 +472,15 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@deepseek-ai/dsh-api-gateway':
+        specifier: workspace:^
+        version: link:../../packages/api/gateway
       '@deepseek-ai/dsh-app-boot':
         specifier: workspace:^
         version: link:../../packages/boot/app-boot
+      '@deepseek-ai/dsh-atomic-write':
+        specifier: workspace:^
+        version: link:../../packages/util/atomic-write
       '@deepseek-ai/dsh-base':
         specifier: workspace:^
         version: link:../../packages/bundle/base
@@ -1489,6 +1495,9 @@ importers:
       '@deepseek-ai/dsh-cordis-host-runner':
         specifier: workspace:^
         version: link:../../extensions/cordis-host-runner
+      '@deepseek-ai/dsh-credentials-electron':
+        specifier: workspace:^
+        version: link:../../credentials/credentials-electron
       '@deepseek-ai/dsh-file-reference':
         specifier: workspace:^
         version: link:../../context/file-reference
@@ -1504,6 +1513,9 @@ importers:
       '@deepseek-ai/dsh-host-directory-picker-browse':
         specifier: workspace:^
         version: link:../../host/directory-picker-browse
+      '@deepseek-ai/dsh-host-directory-picker-electron':
+        specifier: workspace:^
+        version: link:../../host/directory-picker-electron
       '@deepseek-ai/dsh-host-directory-picker-native':
         specifier: workspace:^
         version: link:../../host/directory-picker-native
@@ -4702,6 +4714,25 @@ importers:
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
 
+  packages/credentials/credentials-electron:
+    dependencies:
+      '@deepseek-ai/dsh-credentials':
+        specifier: workspace:^
+        version: link:../credentials
+      '@deepseek-ai/dsh-host-desktop-electron':
+        specifier: workspace:^
+        version: link:../../host/desktop-electron
+      '@deepseek-ai/dsh-launch-environment':
+        specifier: workspace:^
+        version: link:../../util/launch-environment
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
+
   packages/credentials/credentials-local:
     dependencies:
       '@deepseek-ai/schemastery':
@@ -6009,6 +6040,22 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+
+  packages/host/directory-picker-electron:
+    dependencies:
+      '@deepseek-ai/dsh-host-desktop-electron':
+        specifier: workspace:^
+        version: link:../desktop-electron
+      '@deepseek-ai/dsh-host-directory-picker':
+        specifier: workspace:^
+        version: link:../directory-picker
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
 
   packages/host/directory-picker-native:
     dependencies:

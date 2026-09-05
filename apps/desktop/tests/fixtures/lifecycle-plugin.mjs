@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 
 export const name = 'desktop-e2e-lifecycle'
 export const inject = ['desktopRuntime']
@@ -9,9 +10,150 @@ function record(type, fields = {}) {
   appendFileSync(path, `${JSON.stringify({ type, pid: process.pid, ...fields })}\n`)
 }
 
+/** Invoke one native directory pick through the desktopRuntime lane and record its outcome. */
+function runNativePickProbe(ctx) {
+  const runtime = ctx.get('desktopRuntime')
+  if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
+  if (runtime.nativeRequest === undefined) {
+    record('native-pick-unavailable')
+    return
+  }
+  void runtime.nativeRequest('directory-pick', undefined, new AbortController().signal).then((path) => {
+    record('native-pick-resolved', { path })
+  }, (error) => {
+    record('native-pick-rejected', { detail: String(error) })
+  })
+}
+
+/** Store and resolve one credential through the composed provider and record the outcomes. */
+function runCredentialProbe(ctx) {
+  const credentials = ctx.get('credentials')
+  if (credentials === undefined) throw new Error('desktop e2e fixture has no credentials service')
+  void (async () => {
+    await credentials.set('DSH_E2E_KEY', 'secret-1')
+    const resolved = await credentials.resolve('DSH_E2E_KEY')
+    record('credential-resolved', { detail: JSON.stringify(resolved) })
+    const described = await credentials.describe('DSH_E2E_KEY')
+    record('credential-described', { detail: JSON.stringify(described) })
+  })().catch(error => {
+    record('credential-rejected', { detail: String(error) })
+  })
+}
+
+/** List the composed workspace registry once it holds anything, for the e2e assertion. */
+function runWorkspaceProbe(ctx) {
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined) {
+    record('workspaces-unavailable')
+    return
+  }
+  // The deep-link dispatch races this probe's start; poll briefly until the
+  // registry holds the adoption (or the bound lapses) before recording.
+  const startedAt = Date.now()
+  const sample = () => {
+    const workspaces = registry.list().map((workspace) => ({
+      path: workspace.path,
+      title: workspace.title,
+    }))
+    if (workspaces.length > 0 || Date.now() - startedAt > 15_000) {
+      record('workspaces', { detail: JSON.stringify(workspaces) })
+      return
+    }
+    setTimeout(sample, 100)
+  }
+  sample()
+}
+
+/** Create one agent, open its turn, and ask one real approval through the seam. */
+function runApprovalProbe(ctx) {
+  const agents = ctx.get('agents')
+  if (agents === undefined) {
+    record('approval-unavailable')
+    return
+  }
+  void (async () => {
+    let agentCtx = undefined
+    const handle = await agents.create({
+      sessionId: 'desktop-e2e-approval',
+      meta: { cwd: process.cwd() },
+      setup: async (prepared) => {
+        agentCtx = prepared
+      },
+    })
+    try {
+      if (agentCtx === undefined || agentCtx.agent === undefined) {
+        throw new Error('desktop e2e fixture could not reach the prepared agent')
+      }
+      await agentCtx.agent.session.append('turn/start', { turn: 1 })
+      const approval = ctx.get('approval')
+      if (approval === undefined) {
+        throw new Error('desktop e2e fixture has no approval service')
+      }
+      const outcome = await approval.request({
+        agent: agentCtx.agent,
+        toolName: 'desktop-e2e',
+        reason: 'notification answer probe',
+      })
+      record('approval-outcome', { detail: outcome })
+    } catch (error) {
+      record('approval-rejected', { detail: String(error) })
+    } finally {
+      await handle.dispose()
+    }
+  })()
+}
+
 export function apply(ctx) {
   const runtime = ctx.get('desktopRuntime')
   if (runtime === undefined) throw new Error('desktop e2e fixture has no desktopRuntime')
+  // The main-process `dialog` stub is installed by the test after launch;
+  // a boot-time probe would race it (and open a real chooser in CI). Trigger
+  // the pick when the test writes a marker into this fixture's root. Interval
+  // polling keeps the fixture dependency-free and the ordering deterministic.
+  const triggerPath = process.env.DSH_DESKTOP_E2E_PICK_TRIGGER
+  if (triggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(triggerPath)) {
+        clearInterval(timer)
+        runNativePickProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const credentialTriggerPath = process.env.DSH_DESKTOP_E2E_CREDENTIAL_TRIGGER
+  if (credentialTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(credentialTriggerPath)) {
+        clearInterval(timer)
+        runCredentialProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const workspaceTriggerPath = process.env.DSH_DESKTOP_E2E_WORKSPACE_TRIGGER
+  if (workspaceTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(workspaceTriggerPath)) {
+        clearInterval(timer)
+        runWorkspaceProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
+  const approvalTriggerPath = process.env.DSH_DESKTOP_E2E_APPROVAL_TRIGGER
+  if (approvalTriggerPath !== undefined) {
+    const probe = () => {
+      if (existsSync(approvalTriggerPath)) {
+        clearInterval(timer)
+        runApprovalProbe(ctx)
+      }
+    }
+    const timer = setInterval(probe, 50)
+    probe()
+  }
   ctx.effect(() => {
     const originalFetch = runtime.fetch
     const originalOpenStream = runtime.openStream

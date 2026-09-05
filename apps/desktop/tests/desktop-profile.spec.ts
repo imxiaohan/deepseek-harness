@@ -8,6 +8,7 @@
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,10 +22,45 @@ const INSTALL_ANCHOR = fileURLToPath(new URL('../package.json', import.meta.url)
 let home: string | undefined
 let ctx: Context | undefined
 
+/** The IPC interception's restore pieces, captured before the profile boots. */
+const previousSend = process.send?.bind(process)
+const previousChildEnv = process.env.DSH_DESKTOP_HOST_CHILD
+
 beforeAll(async () => {
   home = await mkdtemp(join(tmpdir(), 'dsh-desktop-profile-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
+  // The composition's credential provider crosses to Electron main over the
+  // host-child IPC channel; there is no main process here, so the spec stands
+  // in for it — answering the boot-time browser-auth record round trips over
+  // an intercepted `process.send`, which is exactly the interface main uses.
+  const authSecret = randomBytes(32).toString('base64url')
+  process.env.DSH_DESKTOP_HOST_CHILD = '1'
+  const emitInbound = (value: unknown): void => {
+    void (process.emit as unknown as (event: string, payload: unknown) => unknown)('message', value)
+  }
+  Object.defineProperty(process, 'send', {
+    value: (message: unknown) => {
+      const request = message as { t?: string; op?: string; id?: string }
+      if (request.t === 'native-request' && request.op === 'credential-record-lease') {
+        setImmediate(() => {
+          emitInbound({
+            t: 'native-ok',
+            id: request.id,
+            op: request.op,
+            value: { lease: 'spec-lease', record: { kind: 'grant', payload: { version: 1, secret: authSecret } } },
+          })
+        })
+      } else if (request.t === 'native-request' && request.op === 'credential-record-abort') {
+        setImmediate(() => {
+          emitInbound({ t: 'native-ok', id: request.id, op: request.op })
+        })
+      }
+      return true
+    },
+    writable: true,
+    configurable: true,
+  })
   try {
     const booted = await runProfile({
       environment: loadLayeredEnv('dsh'),
@@ -42,6 +78,9 @@ beforeAll(async () => {
 }, 120_000)
 
 afterAll(async () => {
+  Object.defineProperty(process, 'send', { value: previousSend, writable: true, configurable: true })
+  if (previousChildEnv === undefined) delete process.env.DSH_DESKTOP_HOST_CHILD
+  else process.env.DSH_DESKTOP_HOST_CHILD = previousChildEnv
   await ctx?.fiber.dispose()
   if (home !== undefined) await rm(home, { recursive: true, force: true })
 })
@@ -54,6 +93,10 @@ describe('the desktop profile composition', () => {
     // Gateway it opens streams through.
     expect(ctx!.get('desktopRuntime')).toBeDefined()
     expect(ctx!.get('typertGateway')).toBeDefined()
+    // The desktop surface swapped the seam to the OS-keychain provider. The
+    // composition loads its entry through built `lib/` while this spec imports
+    // source, so the two class objects differ; the constructor names the class.
+    expect(ctx!.get('credentials')?.constructor.name).toBe('ElectronCredentialProvider')
     // The web-runtime service exists only behind the dropped web-runtime row;
     // its absence is the HTTP-carrier-row absence made observable.
     expect(ctx!.get('webRuntime')).toBeUndefined()
@@ -133,6 +176,14 @@ describe('the desktop profile composition', () => {
       await rm(webHome, { recursive: true, force: true })
     }
   }, 120_000)
+
+  it('composes the desktop Electron-native directory picker behind the seam', () => {
+    const picker = ctx!.get('directoryPicker') as {
+      capability(): { kind: string }
+    } | undefined
+    expect(picker).toBeDefined()
+    expect(picker!.capability().kind).toBe('native')
+  })
 
   it('serves the advertised startup batch through the carrier lane', async () => {
     const runtime = ctx!.get('desktopRuntime') as {

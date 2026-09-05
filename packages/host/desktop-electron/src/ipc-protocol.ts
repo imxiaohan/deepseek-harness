@@ -129,6 +129,93 @@ export interface DesktopShutdownMessage {
   readonly code: 0 | 1
 }
 
+/** One stored credential record as it crosses the native-op wire, mirroring the seam's record union. */
+export type DesktopCredentialRecordWire =
+  | { readonly kind: 'api-key'; readonly key?: string; readonly env?: Record<string, string> }
+  | { readonly kind: 'grant'; readonly payload: unknown }
+
+/** The closed vocabulary of native operations the host child can ask Electron main to perform. */
+export type DesktopNativeOp =
+  | 'directory-pick'
+  | 'credential-has'
+  | 'credential-get'
+  | 'credential-set'
+  | 'credential-unset'
+  | 'credential-record-status'
+  | 'credential-record-read'
+  | 'credential-record-list'
+  | 'credential-record-lease'
+  | 'credential-record-commit'
+  | 'credential-record-abort'
+  | 'credential-record-delete'
+
+/** Per-operation request arguments; `undefined` members send no `args` field at all. */
+export interface DesktopNativeRequestArgs {
+  readonly 'directory-pick': undefined
+  readonly 'credential-has': { readonly ref: string }
+  readonly 'credential-get': { readonly ref: string }
+  readonly 'credential-set': { readonly ref: string; readonly value: string }
+  readonly 'credential-unset': { readonly ref: string }
+  readonly 'credential-record-status': { readonly key: string }
+  readonly 'credential-record-read': { readonly key: string }
+  readonly 'credential-record-list': undefined
+  readonly 'credential-record-lease': { readonly key: string }
+  readonly 'credential-record-commit': {
+    readonly key: string
+    readonly lease: string
+    readonly record: DesktopCredentialRecordWire
+  }
+  readonly 'credential-record-abort': { readonly lease: string }
+  readonly 'credential-record-delete': { readonly key: string }
+}
+
+/** Per-operation success values; `undefined` members carry no `value` field. */
+export interface DesktopNativeValue {
+  readonly 'directory-pick': string | null
+  readonly 'credential-has': boolean
+  readonly 'credential-get': string | null
+  readonly 'credential-set': boolean
+  readonly 'credential-unset': boolean
+  readonly 'credential-record-status': { readonly configured: boolean; readonly kind?: 'api-key' | 'grant' }
+  readonly 'credential-record-read': DesktopCredentialRecordWire | null
+  readonly 'credential-record-list': readonly { readonly key: string; readonly kind: 'api-key' | 'grant' }[]
+  readonly 'credential-record-lease': {
+    readonly lease: string
+    readonly record: DesktopCredentialRecordWire | null
+  }
+  readonly 'credential-record-commit': DesktopCredentialRecordWire
+  readonly 'credential-record-abort': undefined
+  readonly 'credential-record-delete': boolean
+}
+
+/** One host-initiated native request, host child to Electron main, narrowed per op. */
+export type DesktopNativeRequestMessage = {
+  [Op in DesktopNativeOp]: {
+    readonly t: 'native-request'
+    /** Correlation id; the matching response carries it back. */
+    readonly id: DesktopIpcId
+    readonly op: Op
+  } & (DesktopNativeRequestArgs[Op] extends undefined
+    ? { readonly args?: undefined }
+    : { readonly args: DesktopNativeRequestArgs[Op] })
+}[DesktopNativeOp]
+
+/** The successful answer to one native request, Electron main to host child. */
+export interface DesktopNativeOkMessage {
+  readonly t: 'native-ok'
+  readonly id: DesktopIpcId
+  readonly op: DesktopNativeOp
+  readonly value?: DesktopNativeValue[DesktopNativeOp]
+}
+
+/** The failed answer to one native request; the error text never quotes a secret. */
+export interface DesktopNativeErrorMessage {
+  readonly t: 'native-error'
+  readonly id: DesktopIpcId
+  readonly op: DesktopNativeOp
+  readonly error: string
+}
+
 /** Every message the carrier protocol carries. */
 export type DesktopIpcMessage =
   | DesktopFetchMessage
@@ -145,6 +232,9 @@ export type DesktopIpcMessage =
   | DesktopStreamErrorMessage
   | DesktopBootResponseMessage
   | DesktopShutdownMessage
+  | DesktopNativeRequestMessage
+  | DesktopNativeOkMessage
+  | DesktopNativeErrorMessage
 
 /** One direction of the host-child channel: send a protocol message. */
 export type DesktopHostSend = (message: DesktopIpcMessage) => void
@@ -201,6 +291,142 @@ function isIndexInjection(value: unknown): value is IndexInjection {
     default:
       return false
   }
+}
+
+/** Test whether one value is JSON-admissible (no `undefined`, functions, or non-finite numbers). */
+function isJsonValue(value: unknown, seen: Set<object> = new Set()): boolean {
+  if (value === null) return true
+  switch (typeof value) {
+    case 'string':
+    case 'boolean':
+      return true
+    case 'number':
+      return Number.isFinite(value)
+    case 'object': {
+      if (seen.has(value)) return false
+      if (Array.isArray(value)) {
+        seen.add(value)
+        const ok = value.every(item => isJsonValue(item, seen))
+        seen.delete(value)
+        return ok
+      }
+      if (Object.getPrototypeOf(value) !== Object.prototype) return false
+      seen.add(value)
+      const ok = Object.values(value).every(item => isJsonValue(item, seen))
+      seen.delete(value)
+      return ok
+    }
+    default:
+      return false
+  }
+}
+
+/** Validate one stored credential record against the seam's closed union. */
+export function isDesktopCredentialRecord(value: unknown): value is DesktopCredentialRecordWire {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false
+  switch (value.kind) {
+    case 'api-key':
+      return hasFields(value, ['kind'], ['key', 'env'])
+        && (value.key === undefined || typeof value.key === 'string' && value.key.length > 0)
+        && (value.env === undefined || isRecord(value.env)
+          && Object.entries(value.env).every(([name, entry]) =>
+            typeof name === 'string' && name.length > 0 && typeof entry === 'string' && entry.length > 0))
+    case 'grant':
+      return hasFields(value, ['kind', 'payload']) && isJsonValue(value.payload)
+    default:
+      return false
+  }
+}
+
+/** Test one record-kind tag. */
+function isRecordKind(value: unknown): value is 'api-key' | 'grant' {
+  return value === 'api-key' || value === 'grant'
+}
+
+/** Test the closed native-op vocabulary. */
+function isNativeOp(value: unknown): value is DesktopNativeOp {
+  return value === 'directory-pick'
+    || value === 'credential-has'
+    || value === 'credential-get'
+    || value === 'credential-set'
+    || value === 'credential-unset'
+    || value === 'credential-record-status'
+    || value === 'credential-record-read'
+    || value === 'credential-record-list'
+    || value === 'credential-record-lease'
+    || value === 'credential-record-commit'
+    || value === 'credential-record-abort'
+    || value === 'credential-record-delete'
+}
+
+/** Test one ref-or-key args field: a non-empty string. */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/** Validate `native-request` args against the operation's exact field set. */
+function isNativeArgs(op: string, args: unknown): boolean {
+  const field = (value: Record<string, unknown>, name: string): boolean =>
+    isNonEmptyString(value[name])
+  switch (op) {
+    case 'directory-pick':
+    case 'credential-record-list':
+      return args === undefined
+    case 'credential-has':
+    case 'credential-get':
+    case 'credential-unset':
+      return isRecord(args) && hasFields(args, ['ref']) && field(args, 'ref')
+    case 'credential-set':
+      return isRecord(args) && hasFields(args, ['ref', 'value'])
+        && field(args, 'ref') && field(args, 'value')
+    case 'credential-record-status':
+    case 'credential-record-read':
+    case 'credential-record-lease':
+    case 'credential-record-delete':
+      return isRecord(args) && hasFields(args, ['key']) && field(args, 'key')
+    case 'credential-record-commit':
+      return isRecord(args) && hasFields(args, ['key', 'lease', 'record'])
+        && field(args, 'key') && field(args, 'lease')
+        && isDesktopCredentialRecord(args.record)
+    case 'credential-record-abort':
+      return isRecord(args) && hasFields(args, ['lease']) && field(args, 'lease')
+    default:
+      return false
+  }
+}
+
+/** Validate `native-ok`'s value against the operation's result shape. */
+function isNativeValue(op: DesktopNativeOp, value: unknown): boolean {
+  switch (op) {
+    case 'directory-pick':
+    case 'credential-get':
+      return value === null || typeof value === 'string'
+    case 'credential-has':
+    case 'credential-set':
+    case 'credential-unset':
+    case 'credential-record-delete':
+      return typeof value === 'boolean'
+    case 'credential-record-status':
+      return isRecord(value) && hasFields(value, ['configured'], ['kind'])
+        && typeof value.configured === 'boolean'
+        && (value.kind === undefined || isRecordKind(value.kind))
+    case 'credential-record-read':
+      return value === null || isDesktopCredentialRecord(value)
+    case 'credential-record-commit':
+      return isDesktopCredentialRecord(value)
+    case 'credential-record-list':
+      return Array.isArray(value) && value.every(entry =>
+        isRecord(entry) && hasFields(entry, ['key', 'kind'])
+          && isNonEmptyString(entry.key) && isRecordKind(entry.kind))
+    case 'credential-record-lease':
+      return isRecord(value) && hasFields(value, ['lease', 'record'])
+        && isNonEmptyString(value.lease)
+        && (value.record === null || isDesktopCredentialRecord(value.record))
+    case 'credential-record-abort':
+      return value === undefined
+  }
+  /* v8 ignore next -- unreachable: the op vocabulary is validated before this switch. */
+  return false
 }
 
 /**
@@ -269,6 +495,24 @@ export function parseDesktopIpcMessage(value: unknown): DesktopIpcMessage | unde
       break
     case 'shutdown':
       if (!hasFields(value, ['t', 'code']) || value.code !== 0 && value.code !== 1) return undefined
+      break
+    case 'native-request':
+      if (!hasFields(value, ['t', 'id', 'op'], ['args'])
+        || typeof value.id !== 'string'
+        || typeof value.op !== 'string'
+        || !isNativeArgs(value.op, value.args)) return undefined
+      break
+    case 'native-ok':
+      if (!hasFields(value, ['t', 'id', 'op'], ['value'])
+        || typeof value.id !== 'string'
+        || !isNativeOp(value.op)
+        || !isNativeValue(value.op, value.value)) return undefined
+      break
+    case 'native-error':
+      if (!hasFields(value, ['t', 'id', 'op', 'error'])
+        || typeof value.id !== 'string'
+        || !isNativeOp(value.op)
+        || typeof value.error !== 'string') return undefined
       break
     default:
       return undefined

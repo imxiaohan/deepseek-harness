@@ -26,9 +26,15 @@ import {
   nativeTheme,
   Notification,
   protocol,
+  safeStorage,
   session,
 } from 'electron/main'
 import { PROCESS_SHUTDOWN_TIMEOUT_MS } from '@deepseek-ai/dsh-app-boot'
+import {
+  REMOTE_EVENT_STREAM_ENDPOINT,
+  REMOTE_EVENT_STREAM_PAYLOAD,
+  REMOTE_EVENT_RESULT_ENDPOINT,
+} from '@deepseek-ai/dsh-api-gateway'
 import { renderIndexInjections } from '@deepseek-ai/dsh-host-webserver'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
@@ -45,6 +51,14 @@ import {
   type DesktopIpcMessage,
 } from '@deepseek-ai/dsh-host-desktop-electron'
 import { desktopNativeCopy, type DesktopFatalStage } from './locale.ts'
+import { createCredentialStore, type CredentialStore } from './credential-store.ts'
+import {
+  DESKTOP_DEEP_LINK_SCHEME,
+  extractDesktopDeepLinkArgv,
+  parseDesktopDeepLink,
+  type DesktopDeepLink,
+} from './deep-link.ts'
+import { PendingNotificationHub } from './pending-notifications.ts'
 import {
   DESKTOP_WINDOW_THEME_CHANNEL,
   parseDesktopWindowThemeSource,
@@ -64,6 +78,17 @@ function resolveDistRoot(): string {
   const require = createRequire(import.meta.url)
   const manifest = require.resolve('@deepseek-ai/dsh-web-frontend/package.json')
   return join(dirname(manifest), 'dist')
+}
+
+/** The OS-keychain credential store; created once the app data directory is known. */
+let credentials: CredentialStore | undefined
+
+/** The credential store, failing a native request that arrived before readiness. */
+function credentialStore(): CredentialStore {
+  if (credentials === undefined) {
+    throw new Error('dsh desktop: the credential store is not ready yet; retry the operation')
+  }
+  return credentials
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -300,6 +325,16 @@ function handleHostMessage(message: DesktopIpcMessage): void {
     case 'stream-item':
     case 'stream-end':
     case 'stream-error': {
+      if (mainEventsStream === message.id) {
+        if (message.t === 'stream-item') pendingHub?.handleFrame(message.value)
+        else {
+          // The forwarded-event stream ended: collapse what it presented and
+          // release ownership so a later boot can open a fresh generation.
+          mainEventsStream = undefined
+          pendingHub?.dispose()
+        }
+        return
+      }
       if (!rendererStreams.has(message.id)) return
       if (message.t !== 'stream-item') rendererStreams.delete(message.id)
       const window = mainWindow
@@ -313,11 +348,106 @@ function handleHostMessage(message: DesktopIpcMessage): void {
       }
       return
     }
+    case 'native-request': {
+      void answerNativeRequest(message).catch((cause: unknown) => {
+        if (quitting) return
+        reportFatal('fatal.host.nativeOp', cause)
+        quitAfterFatal()
+      })
+      return
+    }
     default:
       // Requests flow main→host only; an inbound request shape is a protocol
       // echo the main process ignores.
       return
   }
+}
+
+/**
+ * Answer one native request: an operation's own failure (unavailable
+ * encryption, an expired lease) answers as `native-error`, while a structural
+ * failure of the dispatch or the answer channel is fatal (the carrier lane is
+ * broken and the shell reports it through the fatal lane).
+ */
+async function answerNativeRequest(message: Extract<DesktopIpcMessage, { t: 'native-request' }>): Promise<void> {
+  try {
+    const value = await performNativeOp(message)
+    await sendHostMessage({
+      t: 'native-ok',
+      id: message.id,
+      op: message.op,
+      ...value === undefined ? {} : { value },
+      // The dispatch answers typed per-op values it cannot name generically;
+      // the receiving side's parse re-validates the pair.
+    } as Parameters<typeof sendHostMessage>[0])
+  } catch (failure) {
+    if (!(failure instanceof NativeOpFailure)) throw failure
+    await sendHostMessage({ t: 'native-error', id: message.id, op: message.op, error: failure.message })
+  }
+}
+
+/** Run one native operation's main-process half, mapping its failure text. */
+async function performNativeOp(message: Extract<DesktopIpcMessage, { t: 'native-request' }>): Promise<unknown> {
+  try {
+    switch (message.op) {
+      case 'directory-pick':
+        return await pickNativeDirectory()
+      case 'credential-has':
+        return await credentialStore().has(message.args.ref)
+      case 'credential-get':
+        return await credentialStore().get(message.args.ref)
+      case 'credential-set':
+        return await credentialStore().set(message.args.ref, message.args.value)
+      case 'credential-unset':
+        return await credentialStore().unset(message.args.ref)
+      case 'credential-record-status':
+        return await credentialStore().recordStatus(message.args.key)
+      case 'credential-record-read':
+        return await credentialStore().readRecord(message.args.key)
+      case 'credential-record-list':
+        return await credentialStore().listRecords()
+      case 'credential-record-lease':
+        return await credentialStore().leaseRecord(message.args.key)
+      case 'credential-record-commit':
+        return await credentialStore().commitRecord(message.args.key, message.args.lease, message.args.record)
+      case 'credential-record-abort':
+        await credentialStore().abortLease(message.args.lease)
+        return undefined
+      case 'credential-record-delete':
+        return await credentialStore().deleteRecord(message.args.key)
+      default:
+        // parseDesktopIpcMessage admits only the closed op vocabulary, so this
+        // switch is exhaustive; the cast names that for the compiler without
+        // re-narrowing the per-op message shape.
+        return assertNeverOp(message)
+    }
+  } catch (failure) {
+    // An operation's business failure answers the request; only a structural
+    // failure of the answer channel itself is fatal (the catch in
+    // answerNativeRequest's caller).
+    throw new NativeOpFailure(failure instanceof Error ? failure.message : String(failure))
+  }
+}
+
+/** Distinguish an operation failure's answer text from a broken dispatch. */
+class NativeOpFailure extends Error {}
+
+/** The closed-op exhaustiveness guard; the parser cannot produce its input. */
+function assertNeverOp(op: never): never {
+  throw new Error(`dsh desktop: unknown native op ${String(op)}`)
+}
+
+/** Show one native directory chooser and return the operator's pick. */
+async function pickNativeDirectory(): Promise<string | null> {
+  const window = mainWindow
+  const options: Electron.OpenDialogOptions = {
+    title: nativeCopy().directoryPickerTitle,
+    properties: ['openDirectory', 'createDirectory'],
+  }
+  const result = window === undefined || window.isDestroyed() || window.webContents.isDestroyed()
+    ? await dialog.showOpenDialog(options)
+    : await dialog.showOpenDialog(window, options)
+  return result.canceled ? null : result.filePaths[0] ?? null
 }
 
 /** Create the window over the privileged scheme (or a host-announced URL in Web-profile mode). */
@@ -391,7 +521,7 @@ function createWindow(url?: string): void {
 /** Boot the profile in the host child and open the window once it is ready. */
 function bootShell(): void {
   host = spawn(process.execPath, [HOST_ENTRY], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_HOST_CHILD: '1' },
     stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
   })
   let announced = ''
@@ -438,6 +568,105 @@ function bootShell(): void {
   })
   void bootSettled.then(() => {
     if (mainWindow === undefined) createWindow()
+    // The carrier is ready: drain anything the OS delivered during boot, then
+    // take the cold-start link if this launch carried one.
+    deepLinksDrained = true
+    for (const link of pendingDeepLinks.splice(0)) {
+      void dispatchDeepLink(link).catch((cause: unknown) => {
+        if (quitting) return
+        reportFatal('fatal.host.deepLink', cause)
+        quitAfterFatal()
+      })
+    }
+    const coldLink = extractDesktopDeepLinkArgv(process.argv)
+    if (coldLink !== undefined) enqueueDeepLink(coldLink)
+    openPendingNotifications()
+  })
+}
+
+/** The notification answerer over the Gateway's forwarded-event stream. */
+let pendingHub: PendingNotificationHub | undefined
+
+/** The main-owned `$events` logical stream id, while the stream is open. */
+let mainEventsStream: DesktopIpcId | undefined
+
+/** Bring the application window forward. */
+function focusApplicationWindow(): void {
+  if (mainWindow === undefined && indexHtml !== undefined) createWindow()
+  mainWindow?.focus()
+}
+
+/** Build the hub over Electron notifications and the carrier's answer RPC. */
+function createPendingHub(): PendingNotificationHub {
+  const copy = nativeCopy()
+  return new PendingNotificationHub({
+    notifier: {
+      show: (spec, events) => {
+        // Unsupported sessions degrade to no notifications rather than a
+        // constructor failure; the window keeps answering everything.
+        if (!Notification.isSupported()) {
+          return { close: () => {} }
+        }
+        const notification = new Notification({
+          title: spec.title,
+          body: spec.body,
+          actions: spec.actions.map(text => ({ type: 'button', text })),
+        })
+        notification.on('action', (_event, index) => { events.onAnswer(index) })
+        notification.on('click', () => { events.onFocus() })
+        notification.on('close', () => { events.onDismissed() })
+        notification.show()
+        return { close: () => { notification.close() } }
+      },
+    },
+    poster: {
+      post: async (result) => {
+        const id = DesktopIpcId(`ntv-answer:${randomUUID()}`)
+        const envelope = JSON.stringify({
+          type: 'client-request',
+          rpcId: `ntv-answer:${randomUUID()}`,
+          method: REMOTE_EVENT_RESULT_ENDPOINT,
+          // The Remote wire's one-envelope convention: the payload names its
+          // single `args` field, which here carries the event result.
+          payload: { args: result },
+        })
+        const response = await sendHostFetch(
+          id,
+          `http://${CARRIER_LOOPBACK_HOST}/api/${REMOTE_EVENT_RESULT_ENDPOINT}`,
+          'POST',
+          { 'content-type': 'application/json' },
+          envelope,
+        )
+        return response.status
+      },
+    },
+    logger: { warn: (text) => { console.warn(text) } },
+    copy: {
+      approvalTitle: copy.approvalTitle,
+      allow: copy.allow,
+      deny: copy.deny,
+      questionTitle: copy.questionTitle,
+    },
+    focus: focusApplicationWindow,
+  })
+}
+
+/** Open the forwarded-event stream this shell answers notifications from. */
+function openPendingNotifications(): void {
+  pendingHub ??= createPendingHub()
+  void (async () => {
+    const id = DesktopIpcId(`ntv-events:${randomUUID()}`)
+    await sendHostMessage({
+      t: 'open-stream',
+      id,
+      endpoint: REMOTE_EVENT_STREAM_ENDPOINT,
+      payload: REMOTE_EVENT_STREAM_PAYLOAD,
+    })
+    mainEventsStream = id
+  })().catch((cause: unknown) => {
+    if (quitting) return
+    reportFatal('fatal.host.eventStream', cause)
+    quitAfterFatal()
   })
 }
 
@@ -445,10 +674,24 @@ if (!app.requestSingleInstanceLock()) {
   console.error('dsh desktop: another instance is already running; close it before launching again')
   app.exit(1)
 } else {
+  // Dev builds share one Electron binary; registering the public scheme there
+  // would claim every unpackaged dev app's links. Packaged builds own it.
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DESKTOP_DEEP_LINK_SCHEME)
+
   process.once('SIGINT', () => { app.quit() })
   process.once('SIGTERM', () => { app.quit() })
 
-  app.on('second-instance', () => { mainWindow?.focus() })
+  // macOS delivers links before readiness; queue them for the drain below.
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    enqueueDeepLink(url)
+  })
+
+  app.on('second-instance', (_event, argv) => {
+    const url = extractDesktopDeepLinkArgv(argv)
+    if (url !== undefined) enqueueDeepLink(url)
+    mainWindow?.focus()
+  })
 
   app.on('activate', () => {
     if (!quitting && mainWindow === undefined && indexHtml !== undefined) createWindow()
@@ -469,6 +712,10 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    credentials = createCredentialStore({
+      filename: join(app.getPath('userData'), 'credentials.json'),
+      crypto: safeStorage,
+    })
     session.defaultSession.webRequest.onBeforeRequest({
       urls: [`${APP_SCHEME}://app/api/*`, `${APP_SCHEME}://app/plugins/*`],
     }, (details, callback) => {
@@ -783,4 +1030,58 @@ function requestHostShutdown(code: 0 | 1): void {
   void sendHostMessage({ t: 'shutdown', code }).catch(() => {
     if (host === child) child.kill('SIGKILL')
   })
+}
+
+/** Deep links accepted before the carrier is ready, drained once it is. */
+const pendingDeepLinks: DesktopDeepLink[] = []
+let deepLinksDrained = false
+
+/**
+ * Route one delivered link: complete validation happens here — malformed,
+ * unsupported, and cross-authority input is refused before any command or
+ * host API sees it — and the accepted intent queues until the carrier is up.
+ */
+function enqueueDeepLink(url: string): void {
+  const link = parseDesktopDeepLink(url)
+  if (link === undefined) {
+    console.warn(`dsh desktop: ignored a malformed or cross-authority deep link: ${url.slice(0, 200)}`)
+    return
+  }
+  if (deepLinksDrained) {
+    void dispatchDeepLink(link).catch((cause: unknown) => {
+      if (quitting) return
+      reportFatal('fatal.host.deepLink', cause)
+      quitAfterFatal()
+    })
+    return
+  }
+  pendingDeepLinks.push(link)
+}
+
+/** Focus the window and route the accepted operation through the existing application API. */
+async function dispatchDeepLink(link: DesktopDeepLink): Promise<void> {
+  if (mainWindow === undefined && indexHtml !== undefined) createWindow()
+  mainWindow?.focus()
+  const id = DesktopIpcId(`deep-link:${randomUUID()}`)
+  const envelope = JSON.stringify({
+    type: 'client-request',
+    rpcId: `deep-link:${randomUUID()}`,
+    method: 'workspace/create',
+    // The Remote wire's one-envelope convention: the payload names its
+    // arguments under exactly one `args` field (the same shape the
+    // forwarded-event stream opens with).
+    payload: { args: { request: { path: link.path } } },
+  })
+  const response: DesktopFetchResponseMessage = await sendHostFetch(
+    id,
+    `http://${CARRIER_LOOPBACK_HOST}/api/workspace/create`,
+    'POST',
+    { 'content-type': 'application/json' },
+    envelope,
+  )
+  // A refused operation (a path that no longer exists, a locked registry) is
+  // a diagnostic, not a shell failure; the window is already in front.
+  if (response.status !== 200) {
+    console.error(`dsh desktop: deep link dispatch answered ${String(response.status)}`)
+  }
 }

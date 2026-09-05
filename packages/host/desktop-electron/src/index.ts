@@ -12,18 +12,34 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { VirtualWebServer } from './virtual-web-server.ts'
+import { createNativeHostClient } from './native-host-client.ts'
+import type { DesktopNativeLane } from './native-host-client.ts'
+import { parseDesktopIpcMessage } from './ipc-protocol.ts'
+import type {
+  DesktopHostChannel,
+  DesktopNativeOp,
+  DesktopNativeRequestArgs,
+  DesktopNativeValue,
+} from './ipc-protocol.ts'
 
 export { VirtualWebServer } from './virtual-web-server.ts'
+export { createNativeHostClient } from './native-host-client.ts'
 export {
   serveDesktopHost,
   type DesktopHostRuntime,
 } from './host-bridge.ts'
 export type { DesktopHostChannel } from './ipc-protocol.ts'
 export type {
+  DesktopCredentialRecordWire,
   DesktopFetchResponseMessage,
-  DesktopIpcMessage,
   DesktopHostSend,
+  DesktopIpcMessage,
+  DesktopNativeOp,
+  DesktopNativeRequestArgs,
+  DesktopNativeValue,
 } from './ipc-protocol.ts'
+export { isDesktopCredentialRecord } from './ipc-protocol.ts'
+export type { DesktopNativeLane } from './native-host-client.ts'
 export {
   CARRIER_LOOPBACK_HOST,
   DesktopIpcId,
@@ -149,6 +165,60 @@ export class DesktopRuntime extends Service {
     return { injections: webServer.collectIndexInjections() }
   }
 
+  private nativeHost: DesktopNativeLane | undefined
+
+  /**
+   * Perform one native operation through the Electron main process. The lane
+   * binds lazily to this process's IPC channel — the transport exists from
+   * the host child's first tick, so a boot-time consumer (the connection
+   * secret) crosses before the post-boot carrier wiring runs.
+   * @param op - the closed-vocabulary native operation.
+   * @param args - the operation's arguments; argument-less ops take `undefined`.
+   * @param signal - caller lifetime; abort drops the pending waiter.
+   * @returns the operation's validated value.
+   * @throws {Error} when this process is not the desktop host child, or with
+   * the main process's error text when the operation failed.
+   */
+  nativeRequest<Op extends DesktopNativeOp>(
+    op: Op,
+    args: DesktopNativeRequestArgs[Op],
+    signal: AbortSignal,
+  ): Promise<DesktopNativeValue[Op]> {
+    const lane = this.nativeHost ??= bindProcessNativeLane()
+    if (lane === undefined) {
+      throw new Error('desktop-electron: no native host lane is bound in this composition')
+    }
+    return lane.request(op, args, signal)
+  }
+}
+
+/**
+ * The host-child IPC channel as a carrier channel, when this process is the
+ * desktop host child the Electron main process spawned.
+ * @returns the channel adapter, or undefined outside the host child.
+ */
+function processChannel(): DesktopHostChannel | undefined {
+  if (process.env.DSH_DESKTOP_HOST_CHILD !== '1' || typeof process.send !== 'function') return undefined
+  return {
+    send: (message) => { process.send?.(message) },
+    onMessage: (listener) => {
+      const handler = (value: unknown): void => {
+        // The host entry's dispatcher owns invalid-message fatality; the
+        // native lane consumes only messages the carrier parse admits.
+        const message = parseDesktopIpcMessage(value)
+        if (message !== undefined) listener(message)
+      }
+      process.on('message', handler)
+      /* v8 ignore next -- the self-bound lane lives for the host child's process lifetime. */
+      return () => { process.off('message', handler) }
+    },
+  }
+}
+
+/** Bind the native lane to the host-child IPC channel when one exists. */
+function bindProcessNativeLane(): DesktopNativeLane | undefined {
+  const channel = processChannel()
+  return channel === undefined ? undefined : createNativeHostClient(channel)
 }
 
 /**
