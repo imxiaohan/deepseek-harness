@@ -626,11 +626,13 @@ function createPendingHub(): PendingNotificationHub {
           type: 'client-request',
           rpcId: `ntv-answer:${randomUUID()}`,
           method: REMOTE_EVENT_RESULT_ENDPOINT,
-          payload: result,
+          // The Remote wire's one-envelope convention: the payload names its
+          // single `args` field, which here carries the event result.
+          payload: { args: result },
         })
         const response = await sendHostFetch(
           id,
-          `http://${CARRIER_LOOPBACK_HOST}${REMOTE_EVENT_RESULT_ENDPOINT}`,
+          `http://${CARRIER_LOOPBACK_HOST}/api/${REMOTE_EVENT_RESULT_ENDPOINT}`,
           'POST',
           { 'content-type': 'application/json' },
           envelope,
@@ -1065,7 +1067,10 @@ async function dispatchDeepLink(link: DesktopDeepLink): Promise<void> {
     type: 'client-request',
     rpcId: `deep-link:${randomUUID()}`,
     method: 'workspace/create',
-    payload: { path: link.path },
+    // The Remote wire's one-envelope convention: the payload names its
+    // arguments under exactly one `args` field (the same shape the
+    // forwarded-event stream opens with).
+    payload: { args: { request: { path: link.path } } },
   })
   const response: DesktopFetchResponseMessage = await sendHostFetch(
     id,

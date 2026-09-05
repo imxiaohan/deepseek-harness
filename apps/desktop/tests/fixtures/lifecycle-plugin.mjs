@@ -40,18 +40,28 @@ function runCredentialProbe(ctx) {
   })
 }
 
-/** List the composed workspace registry and record it for the e2e assertion. */
+/** List the composed workspace registry once it holds anything, for the e2e assertion. */
 function runWorkspaceProbe(ctx) {
   const registry = ctx.get('workspaceRegistry')
   if (registry === undefined) {
     record('workspaces-unavailable')
     return
   }
-  const workspaces = registry.list().map((workspace) => ({
-    path: workspace.path,
-    title: workspace.title,
-  }))
-  record('workspaces', { detail: JSON.stringify(workspaces) })
+  // The deep-link dispatch races this probe's start; poll briefly until the
+  // registry holds the adoption (or the bound lapses) before recording.
+  const startedAt = Date.now()
+  const sample = () => {
+    const workspaces = registry.list().map((workspace) => ({
+      path: workspace.path,
+      title: workspace.title,
+    }))
+    if (workspaces.length > 0 || Date.now() - startedAt > 15_000) {
+      record('workspaces', { detail: JSON.stringify(workspaces) })
+      return
+    }
+    setTimeout(sample, 100)
+  }
+  sample()
 }
 
 /** Create one agent, open its turn, and ask one real approval through the seam. */
@@ -74,8 +84,12 @@ function runApprovalProbe(ctx) {
       if (agentCtx === undefined || agentCtx.agent === undefined) {
         throw new Error('desktop e2e fixture could not reach the prepared agent')
       }
-      await agentCtx.session.append('turn/start', { turn: 1 })
-      const outcome = await agentCtx.approval.request({
+      await agentCtx.agent.session.append('turn/start', { turn: 1 })
+      const approval = ctx.get('approval')
+      if (approval === undefined) {
+        throw new Error('desktop e2e fixture has no approval service')
+      }
+      const outcome = await approval.request({
         agent: agentCtx.agent,
         toolName: 'desktop-e2e',
         reason: 'notification answer probe',

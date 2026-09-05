@@ -156,7 +156,9 @@ function processIsAlive(pid: number): boolean {
 async function suppressFatalUi(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ dialog, Notification }) => {
     dialog.showErrorBox = () => {}
-    Notification.isSupported = () => false
+    // The prototype stub keeps fatal-condition notifications silent without
+    // lying about support: notification-backed features keep working.
+    Notification.prototype.show = function () { return true }
   })
 }
 
@@ -312,12 +314,17 @@ describe('the built Electron desktop application', () => {
     await suppressFatalUi(app)
     // A second instance carrying the link exercises the warm ingress: the
     // single-instance lock hands the argv to the running app and exits.
-    const second = await electron.launch({
-      executablePath: electronExecutable,
-      args: ['--lang=en-US', `--user-data-dir=${fixture.userData}`, `dsh://open?path=${encodeURIComponent(target)}`],
-      env: { ...fixture.env, DSH_DESKTOP_E2E_EVENTS: join(triggerDir, 'second-events.jsonl') },
-    })
-    await second.close().catch(() => {})
+    // A plain spawn, not a second Playwright instance: the lock-refused
+    // process exits before Playwright could attach, and its exit IS the
+    // hand-off — the running instance answers the single-instance event.
+    const second = spawn(electronExecutable, [
+      '--lang=en-US',
+      `--user-data-dir=${fixture.userData}`,
+      DESKTOP_DIR,
+      `dsh://open?path=${encodeURIComponent(target)}`,
+    ], { env: { ...fixture.env, DSH_DESKTOP_E2E_EVENTS: join(triggerDir, 'second-events.jsonl') } })
+    const exit = await processExit(second)
+    expect(exit.code).toBe(1)
     await writeFile(trigger, '')
     await waitForEvent(fixture, 'workspaces')
     const recorded = (await fixtureEvents(fixture)).find(event => event.type === 'workspaces') as { detail?: string }
@@ -337,11 +344,31 @@ describe('the built Electron desktop application', () => {
     // The OS notification surface is not drivable from CI; capture what main
     // presents by stubbing show, then drive the captured instance's events.
     await app.evaluate(({ Notification }) => {
-      const shown: Electron.Notification[] = []
-      ;(globalThis as typeof globalThis & { __dshE2ENotifications?: Electron.Notification[] })
+      const shown: Array<{
+        instance: Electron.Notification
+        handlers: Map<string, Array<(...args: unknown[]) => void>>
+      }> = []
+      ;(globalThis as typeof globalThis & { __dshE2ENotifications?: typeof shown })
         .__dshE2ENotifications = shown
+      const handlersOf = (instance: Electron.Notification) => {
+        const existing = shown.find(entry => entry.instance === instance)
+        if (existing !== undefined) return existing.handlers
+        const handlers = new Map<string, Array<(...args: unknown[]) => void>>()
+        shown.push({ instance, handlers })
+        return handlers
+      }
+      const captureOn = (
+        event: string,
+        handler: (...args: unknown[]) => void,
+      ) => {
+        const list = handlersOf(this as unknown as Electron.Notification).get(event) ?? []
+        list.push(handler)
+        handlersOf(this as unknown as Electron.Notification).set(event, list)
+        return this
+      }
+      Notification.prototype.on = captureOn as unknown as typeof Notification.prototype.on
       Notification.prototype.show = function (this: Electron.Notification) {
-        shown.push(this)
+        handlersOf(this)
         return true
       }
     })
@@ -350,14 +377,15 @@ describe('the built Electron desktop application', () => {
       (globalThis as typeof globalThis & { __dshE2ENotifications?: unknown[] })
         .__dshE2ENotifications?.length ?? 0
     )), { timeout: 30_000 }).toBeGreaterThan(0)
-    const first = (await app.evaluate(() => (
-      (globalThis as typeof globalThis & { __dshE2ENotifications?: Electron.Notification[] })
-        .__dshE2ENotifications ?? []
-    )))[0]!
-    expect(first.title).toBe('Approval requested')
-    await app.evaluate((_electron, notification) => {
-      notification.emit('action', {}, 0)
-    }, first)
+    // Electron's Notification exposes no emit and Playwright's channel does
+    // not carry the captured handlers, so drive the first captured action
+    // handler inside main, exactly as a native activation would deliver it.
+    await app.evaluate(() => {
+      const entries = (globalThis as typeof globalThis & {
+        __dshE2ENotifications?: Array<{ handlers: Map<string, Array<(...args: unknown[]) => void>> }>
+      }).__dshE2ENotifications ?? []
+      entries[0]!.handlers.get('action')![0]!({}, 0)
+    })
     await waitForEvent(fixture, 'approval-outcome')
     const outcome = (await fixtureEvents(fixture)).find(event => event.type === 'approval-outcome')
     expect((outcome as { detail?: unknown }).detail).toBe('allowed-once')
