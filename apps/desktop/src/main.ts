@@ -438,20 +438,35 @@ async function main(): Promise<void> {
     void pluginWindow.loadURL(`${SCHEME}://shell/plugin-manager.html`)
   }
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate([{
-    label: process.platform === 'darwin' ? app.name : messages.application,
-    submenu: [
-      {
-        label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
-        accelerator: 'CmdOrCtrl+,',
-        enabled: development === undefined,
-        click: openPluginWindow,
-      },
-      { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
-      { type: 'separator' },
-      { role: 'quit' },
-    ],
-  }]))
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: process.platform === 'darwin' ? app.name : messages.application,
+      submenu: [
+        {
+          label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
+          accelerator: 'CmdOrCtrl+,',
+          enabled: development === undefined,
+          click: openPluginWindow,
+        },
+        { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: messages.editMenu,
+      // Editing roles install the clipboard accelerators the renderer cannot handle without a menu.
+      submenu: [
+        { label: messages.editUndo, role: 'undo' },
+        { label: messages.editRedo, role: 'redo' },
+        { type: 'separator' },
+        { label: messages.editCut, role: 'cut' },
+        { label: messages.editCopy, role: 'copy' },
+        { label: messages.editPaste, role: 'paste' },
+        { label: messages.editSelectAll, role: 'selectAll' },
+      ],
+    },
+  ]))
 
   const createMainWindow = (): BrowserWindow => {
     const window = createWindow(appPreload, true)
