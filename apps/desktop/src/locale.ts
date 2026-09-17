@@ -2,6 +2,13 @@
 
 export const en = {
   application: 'Application',
+  editMenu: 'Edit',
+  editUndo: 'Undo',
+  editRedo: 'Redo',
+  editCut: 'Cut',
+  editCopy: 'Copy',
+  editPaste: 'Paste',
+  editSelectAll: 'Select All',
   startupFailed: 'DeepSeek Harness could not start',
   startupLoading: 'Starting DeepSeek Harness…',
   startupLoadingDescription: 'Your workspace will open when it is ready.',
@@ -56,6 +63,13 @@ export type DesktopMessages = { readonly [Key in keyof typeof en]: string }
 
 export const zh = {
   application: '应用',
+  editMenu: '编辑',
+  editUndo: '撤销',
+  editRedo: '重做',
+  editCut: '剪切',
+  editCopy: '复制',
+  editPaste: '粘贴',
+  editSelectAll: '全选',
   startupFailed: 'DeepSeek Harness 无法启动',
   startupLoading: '正在启动 DeepSeek Harness…',
   startupLoadingDescription: '准备就绪后将自动打开工作区。',

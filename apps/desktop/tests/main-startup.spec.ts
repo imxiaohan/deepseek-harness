@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
+import { Menu } from 'electron'
 import { DESKTOP_IPC } from '../src/ipc.ts'
 
 const harness = await vi.hoisted(async () => {
@@ -323,6 +324,18 @@ describe('desktop main startup', () => {
     harness.hosts[0]!.ready.resolve()
     await harness.navigated.promise
     expect(harness.dialog.showErrorBox).not.toHaveBeenCalled()
+  })
+
+  it('installs clipboard accelerators through the application menu', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const template = vi.mocked(Menu.buildFromTemplate).mock.calls[0]?.[0] as Array<{
+      label: string
+      submenu: Array<{ role?: string; label?: string }>
+    }>
+    const edit = template.find(entry => entry.label === 'Edit')
+    expect(edit?.submenu.map(item => item.role))
+      .toEqual(['undo', 'redo', undefined, 'cut', 'copy', 'paste', 'selectAll'])
   })
 
   it('keeps startup errors and a successful retry in the same window', async () => {
